@@ -2137,7 +2137,8 @@ def api_librarian_search():
     with DBConn() as (conn, cur):
         cur.execute(
             "SELECT id, title, author FROM books "
-            f"WHERE library_name_tm = %s AND {_SENT_SQL} AND title ILIKE %s "
+            f"WHERE NORMALIZE(TRIM(library_name_tm), NFC) = NORMALIZE(%s, NFC) "
+            f"AND {_SENT_SQL} AND NORMALIZE(title, NFC) ILIKE NORMALIZE(%s, NFC) "
             "AND academic_year = %s "
             "ORDER BY title LIMIT 50",
             (library, f"%{text}%", active_year)
