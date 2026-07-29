@@ -26,7 +26,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DISTRICT_NAME = "திண்டுக்கல்"
+DISTRICT_NAME = "சிவகங்கை"
 REPORT_COMMON_HEAD = """
 @page{size:Letter portrait;margin:18mm 15mm 18mm 15mm;}
 body{font-family:'Nirmala UI','Noto Sans Tamil',Arial,sans-serif;font-size:12pt;color:#000;margin:0;}
