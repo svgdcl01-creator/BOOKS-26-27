@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>நூலகர் — புத்தக விவரம் தேடல்</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --teal:#0b3d3d; --teal-dark:#062626; --gold:#c9a227; --gold-soft:#fdf3d8;
+    --cream:#f4f8f7; --card:#ffffff; --ink:#1c2b2b; --ink-soft:#5c706e;
+    --line:#dbe6e4; --green:#2f6d4f; --green-soft:#e6f2ec;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:'Noto Sans Tamil',Arial,sans-serif;
+    background:var(--cream); color:var(--ink); min-height:100vh;
+  }
+  header{
+    background:linear-gradient(135deg,var(--teal),var(--teal-dark));
+    color:#fff; padding:18px 20px; text-align:center; position:relative;
+  }
+  header h1{ font-size:18px; margin:0; font-weight:800; }
+  header .sub{ font-size:12px; color:var(--gold-soft); margin-top:4px; }
+  .logout{
+    position:absolute; right:14px; top:16px; color:#fff; text-decoration:none;
+    font-size:12px; background:rgba(255,255,255,.15); padding:6px 12px; border-radius:20px;
+  }
+
+  main{ max-width:480px; margin:0 auto; padding:20px 16px 60px; }
+
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:20px; margin-bottom:16px; box-shadow:0 6px 20px rgba(11,61,61,0.08);
+  }
+  .card h3{ margin:0 0 12px; font-size:15px; color:var(--teal-dark); }
+
+  label{ font-size:13px; font-weight:600; display:block; margin-bottom:6px; color:var(--ink); }
+  select, input{
+    width:100%; padding:11px 12px; border:1.5px solid var(--line); border-radius:9px;
+    font-size:14.5px; font-family:'Noto Sans Tamil',Arial,sans-serif; background:#fff; color:var(--ink);
+  }
+  select:focus, input:focus{ outline:none; border-color:var(--teal); box-shadow:0 0 0 3px rgba(11,61,61,0.12); }
+
+  button{
+    width:100%; padding:12px; margin-top:12px; border:none; border-radius:10px;
+    font-size:14.5px; font-weight:700; font-family:'Noto Sans Tamil',Arial,sans-serif;
+    cursor:pointer; background:linear-gradient(135deg,var(--teal),var(--teal-dark)); color:#fff;
+  }
+  button.secondary{ background:#fff; color:var(--teal-dark); border:1.5px solid var(--line); }
+  button:disabled{ opacity:.55; cursor:not-allowed; }
+
+  .hint{ font-size:11.5px; color:var(--ink-soft); margin-top:6px; }
+  .err{ background:#fdecea; color:#b3261e; border-left:4px solid #b3261e; padding:9px 12px; border-radius:8px; font-size:13px; margin-top:10px; }
+
+  .lib-badge{
+    text-align:center; font-weight:800; font-size:14px; color:var(--teal-dark);
+    background:var(--gold-soft); border-radius:20px; padding:8px 14px; margin-bottom:16px;
+  }
+
+  table.detail{ width:100%; border-collapse:collapse; margin-top:6px; }
+  table.detail td{ padding:9px 10px; border-bottom:1px solid var(--line); font-size:13.5px; }
+  table.detail td:first-child{ font-weight:700; color:var(--ink-soft); width:46%; }
+
+  .lib-name-big{
+    text-align:center; font-weight:800; font-size:17px; letter-spacing:.4px;
+    color:var(--teal-dark); margin:16px 0 4px; text-transform:uppercase;
+  }
+
+  .pdf-box{
+    margin-top:14px; text-align:center; background:var(--green-soft);
+    border:1px solid #bfe0cf; border-radius:10px; padding:12px;
+  }
+  .pdf-box a{
+    display:inline-block; margin-top:6px; background:var(--green); color:#fff;
+    text-decoration:none; padding:9px 18px; border-radius:8px; font-weight:700; font-size:13.5px;
+  }
+
+  .stage{ display:none; }
+  .stage.active{ display:block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📚 நூலகர் — புத்தக விவரம் தேடல்</h1>
+  <div class="sub">மாவட்ட நூலக ஆணைக்குழு, {{DISTRICT_NAME}}</div>
+  <a class="logout" href="/logout">வெளியேறு</a>
+</header>
+
+<main>
+
+  <!-- Stage 1: நூலகம் தேர்ந்தெடுக்கவும் -->
+  <div class="stage active" id="stageLib">
+    <div class="card">
+      <h3>உங்கள் நூலகம் தேர்ந்தெடுங்கள்</h3>
+      <label>Library</label>
+      <select id="libSelect"><option value="">— ஏற்றுகிறது... —</option></select>
+      <button onclick="submitLibrary()">தொடரவும்</button>
+      <div class="err" id="libErr" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Stage 2: Search box -->
+  <div class="stage" id="stageSearch">
+    <div class="lib-badge" id="libBadge1"></div>
+    <div class="card">
+      <h3>புத்தகம் தேடுங்கள்</h3>
+      <label>தலைப்பு தட்டச்சு செய்யவும் (குறைந்தது 4 எழுத்துக்கள்)</label>
+      <input type="text" id="searchInput" placeholder="எ.கா: தமிழ் இலக்கியம்">
+      <button onclick="doSearch()">Search</button>
+      <button class="secondary" onclick="goToStage('stageLib')">← நூலகம் மாற்ற</button>
+      <div class="err" id="searchErr" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Stage 3: முடிவுகள் dropdown -->
+  <div class="stage" id="stageResults">
+    <div class="lib-badge" id="libBadge2"></div>
+    <div class="card">
+      <h3>பொருந்திய புத்தகங்கள்</h3>
+      <label>ஏதாவது ஒன்றை தேர்ந்தெடுங்கள்</label>
+      <select id="resultSelect"></select>
+      <button onclick="showDetails()">விவரங்கள் காண்பி</button>
+      <button class="secondary" onclick="goToStage('stageSearch')">← மறு-தேடல்</button>
+    </div>
+  </div>
+
+  <!-- Stage 4: விவரங்கள் table + Report5 -->
+  <div class="stage" id="stageDetail">
+    <div class="card">
+      <h3>புத்தக விவரம் தேடல்</h3>
+      <table class="detail" id="detailTable"></table>
+      <div class="lib-name-big" id="libNameBig"></div>
+
+      <div class="pdf-box" id="pdfBox">
+        <div>📄 இந்த நூலகத்திற்கான அறிக்கை (Report 5) தயார் ஆகிறது…</div>
+      </div>
+
+      <button onclick="goToStage('stageSearch')">அடுத்த புத்தக விவரம் பார்க்க</button>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  let selectedLibrary = "";
+  let selectedBookId = null;
+
+  function goToStage(id){
+    document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+  }
+
+  // Library dropdown-ஐ ஏற்கனவே இருக்கும் /api/report5_libs மூலம் நிரப்புகிறோம்
+  fetch('/api/report5_libs')
+    .then(r => r.json())
+    .then(list => {
+      const sel = document.getElementById('libSelect');
+      sel.innerHTML = '<option value="" disabled selected>— தேர்ந்தெடுக்கவும் —</option>' +
+        list.map(name => `<option value="${name}">${name}</option>`).join('');
+    })
+    .catch(() => {
+      document.getElementById('libErr').style.display = 'block';
+      document.getElementById('libErr').textContent = 'நூலக பட்டியல் ஏற்ற முடியவில்லை';
+    });
+
+  function submitLibrary(){
+    const val = document.getElementById('libSelect').value;
+    const errBox = document.getElementById('libErr');
+    if(!val){
+      errBox.style.display = 'block';
+      errBox.textContent = 'நூலகம் தேர்ந்தெடுக்கவும்';
+      return;
+    }
+    errBox.style.display = 'none';
+    selectedLibrary = val;
+    document.getElementById('libBadge1').textContent = val;
+    document.getElementById('libBadge2').textContent = val;
+    document.getElementById('searchInput').value = '';
+    goToStage('stageSearch');
+  }
+
+  function doSearch(){
+    const q = document.getElementById('searchInput').value.trim();
+    const errBox = document.getElementById('searchErr');
+    errBox.style.display = 'none';
+    if(q.length < 4){
+      errBox.style.display = 'block';
+      errBox.textContent = 'குறைந்தது 4 எழுத்துக்கள் தட்டச்சு செய்யவும்';
+      return;
+    }
+    fetch(`/api/librarian/search?library=${encodeURIComponent(selectedLibrary)}&q=${encodeURIComponent(q)}`)
+      .then(r => r.json())
+      .then(data => {
+        if(data.error){
+          errBox.style.display = 'block';
+          errBox.textContent = data.error;
+          return;
+        }
+        if(!data.length){
+          errBox.style.display = 'block';
+          errBox.textContent = 'பொருந்திய புத்தகங்கள் இல்லை';
+          return;
+        }
+        const sel = document.getElementById('resultSelect');
+        sel.innerHTML = data.map(b =>
+          `<option value="${b.id}">${b.title}${b.author ? ' — ' + b.author : ''}</option>`
+        ).join('');
+        goToStage('stageResults');
+      })
+      .catch(() => {
+        errBox.style.display = 'block';
+        errBox.textContent = 'Server பிழை — மறுபடி முயற்சிக்கவும்';
+      });
+  }
+
+  function showDetails(){
+    const id = document.getElementById('resultSelect').value;
+    if(!id) return;
+    selectedBookId = id;
+
+    fetch(`/api/librarian/book/${id}`)
+      .then(r => r.json())
+      .then(d => {
+        if(d.error){ alert(d.error); return; }
+
+        const rowsMap = [
+          ['மாநிலப் பதிவெண்', d.state_acc_number],
+          ['மையப்பதிவெண்', d.central_number],
+          ['கிளைப் பதிவெண்', d.branch_number],
+          ['எழுதியவர்', d.author],
+          ['பதிப்பகம்', d.publisher],
+          ['பதிப்பாண்டு', d.year_pub],
+          ['பதிப்பு விலை', d.price],
+          ['ஏற்பு விலை', d.accepted_price],
+        ];
+        document.getElementById('detailTable').innerHTML =
+          rowsMap.map(([k,v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+        document.getElementById('libNameBig').textContent = d.library_name_tm;
+
+        goToStage('stageDetail');
+        loadReport5(d.library_name_tm);
+      })
+      .catch(() => alert('Server பிழை — மறுபடி முயற்சிக்கவும்'));
+  }
+
+  function loadReport5(libName){
+    const box = document.getElementById('pdfBox');
+    box.innerHTML = '<div>📄 இந்த நூலகத்திற்கான அறிக்கை (Report 5) தயார் ஆகிறது…</div>';
+    fetch('/api/report5', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({lib_name: libName})
+    })
+      .then(r => r.json())
+      .then(res => {
+        if(res.error){
+          box.innerHTML = `<div>⚠️ ${res.error}</div>`;
+          return;
+        }
+        box.innerHTML = `<div>✅ "${libName}" அறிக்கை (Report 5) தயார்</div>
+          <a href="${res.url}" target="_blank">📄 PDF திறக்கவும்</a>`;
+      })
+      .catch(() => { box.innerHTML = '<div>⚠️ அறிக்கை தயார் செய்ய முடியவில்லை</div>'; });
+  }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="ta">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>மாவட்ட மைய நூலகம் - Book Purchase</title>
+<style>
+  :root {
+    --primary: #0d5c63;
+    --primary-light: #1ab8b8;
+    --accent: #43a047;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    --bg: #f0f4f8;
+    --card: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --shadow: 0 2px 12px rgba(0,0,0,0.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Nirmala UI', 'Noto Sans Tamil', Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+
+  /* HEADER */
+  .header {
+    background: linear-gradient(135deg, #0d5c63 0%, #0a4a50 100%);
+    color: white; padding: 0;
+    box-shadow: 0 4px 20px rgba(13,92,99,0.3);
+  }
+  .header-inner { max-width: 1400px; margin: 0 auto; padding: 20px 30px; display: flex; align-items: center; gap: 20px; }
+  .header-icon { font-size: 3rem; }
+  .header-title h1 { font-size: 1.6rem; font-weight: 700; }
+  .header-title p { font-size: 0.9rem; opacity: 0.8; margin-top: 3px; }
+  .header-status { margin-left: auto; background: rgba(255,255,255,0.15); padding: 8px 16px; border-radius: 20px; font-size: 0.85rem; }
+
+  /* ===== LIVE TICKER ===== */
+  .ticker-bar {
+    background: linear-gradient(90deg, #0a4a50 0%, #0d5c63 50%, #0a4a50 100%);
+    color: #fff; overflow: hidden; height: 36px;
+    display: flex; align-items: center;
+    border-bottom: 2px solid #43c6ac; position: relative;
+  }
+  .ticker-label {
+    background: #ff7043; color: #fff; font-size: 11px; font-weight: 800;
+    padding: 0 12px; height: 100%; display: flex; align-items: center;
+    white-space: nowrap; flex-shrink: 0; letter-spacing: 0.5px; z-index: 2;
+  }
+  .ticker-track { flex: 1; overflow: hidden; position: relative; height: 100%; }
+  .ticker-content {
+    display: inline-block; white-space: nowrap;
+    font-size: 13px; font-weight: 600; color: #e0f7f7;
+    animation: tickerMove 40s linear infinite;
+    position: absolute; top: 50%; transform: translateY(-50%);
+  }
+  .ticker-content:hover { animation-play-state: paused; cursor: default; }
+  @keyframes tickerMove { 0% { left: 100%; } 100% { left: -300%; } }
+  .ticker-dot { color: #43c6ac; margin: 0 14px; font-size: 10px; }
+  .ticker-highlight { color: #ffcc80; font-weight: 800; }
+  .ticker-today     { color: #80cbc4; font-weight: 800; }
+  .ticker-pending   { color: #ff8a65; font-weight: 800; }
+  .ticker-sent      { color: #a5d6a7; font-weight: 800; }
+
+  /* NAV TABS */
+  .nav { background: white; border-bottom: 2px solid var(--border); position: sticky; top: 0; z-index: 100; box-shadow: var(--shadow); }
+  .nav-inner { max-width: 1400px; margin: 0 auto; display: flex; padding: 0 20px; }
+  .tab-btn {
+    padding: 16px 24px; border: none; background: none; cursor: pointer;
+    font-size: 0.95rem; font-family: inherit; color: var(--muted);
+    border-bottom: 3px solid transparent; transition: all 0.2s; font-weight: 500;
+  }
+  .tab-btn:hover { color: var(--primary); background: #f8fafb; }
+  .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary-light); font-weight: 700; }
+
+  /* MAIN */
+  .main { max-width: 1400px; margin: 0 auto; padding: 24px 20px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* CARDS */
+  .card { background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 24px; margin-bottom: 20px; border: 1px solid var(--border); }
+  .card-title { font-size: 1.1rem; font-weight: 700; color: var(--primary); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+  /* SEARCH */
+  .search-box { position: relative; margin-bottom: 16px; }
+  .search-box input {
+    width: 100%; padding: 14px 14px 14px 48px;
+    border: 2px solid var(--border); border-radius: 10px;
+    font-size: 1rem; font-family: inherit; transition: border-color 0.2s;
+    background: #fafbfc;
+  }
+  .search-box input:focus { outline: none; border-color: var(--primary-light); background: white; box-shadow: 0 0 0 3px rgba(26,184,184,0.1); }
+  .search-box .search-icon { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 1.2rem; }
+
+  /* TABLE */
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  thead { background: linear-gradient(135deg, var(--primary), #0a7a82); color: white; }
+  thead th { padding: 13px 16px; text-align: left; font-weight: 600; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background 0.15s; cursor: pointer; }
+  tbody tr:hover { background: #f0fafb; }
+  tbody tr.selected { background: #e0f7f7 !important; }
+  tbody td { padding: 12px 16px; }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  tbody tr:nth-child(even):hover { background: #f0fafb; }
+
+  /* ===== MULTI-PRICE BLINK (சிவப்பு) ===== */
+  @keyframes blinkRed {
+    0%, 100% { background: #fce4ec; border-left: 4px solid #ef5350; box-shadow: 0 2px 8px rgba(239,83,80,0.15); }
+    50%       { background: #ffcdd2; border-left: 4px solid #c62828; box-shadow: 0 4px 18px rgba(198,40,40,0.35), 0 0 0 2px rgba(198,40,40,0.15); }
+  }
+  tbody tr.multi-price-row {
+    animation: blinkRed 1.4s ease-in-out infinite;
+  }
+  tbody tr.multi-price-row:hover {
+    animation-play-state: paused;
+    background: #ffcdd2 !important;
+  }
+  .multi-price-badge {
+    background: #ef5350; color: white; font-size: 0.7rem;
+    padding: 2px 7px; border-radius: 10px; font-weight: 700;
+    margin-left: 6px; vertical-align: middle;
+  }
+  /* ===== FUZZY DUPLICATE BLINK (ஆரஞ்சு) ===== */
+  @keyframes blinkOrange {
+    0%, 100% { background: #fff8e1; border-left: 4px solid #ffa000; box-shadow: 0 2px 8px rgba(255,160,0,0.15); }
+    50%       { background: #ffe082; border-left: 4px solid #e65100; box-shadow: 0 4px 18px rgba(230,81,0,0.30), 0 0 0 2px rgba(230,81,0,0.12); }
+  }
+  tbody tr.fuzzy-dup-row {
+    animation: blinkOrange 1.6s ease-in-out infinite;
+  }
+  tbody tr.fuzzy-dup-row:hover {
+    animation-play-state: paused;
+    background: #ffe082 !important;
+  }
+  .fuzzy-dup-badge {
+    background: #ffa000; color: white; font-size: 0.7rem;
+    padding: 2px 7px; border-radius: 10px; font-weight: 700;
+    margin-left: 6px; vertical-align: middle;
+  }
+  }
+
+  /* BUTTONS */
+  .btn {
+    padding: 11px 22px; border: none; border-radius: 8px; cursor: pointer;
+    font-size: 0.9rem; font-family: inherit; font-weight: 600;
+    transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn-primary { background: var(--primary-light); color: white; }
+  .btn-primary:hover { background: #159a9a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(26,184,184,0.3); }
+  .btn-success { background: var(--accent); color: white; }
+  .btn-success:hover { background: #388e3c; transform: translateY(-1px); }
+  .btn-outline { background: white; color: var(--primary); border: 2px solid var(--primary); }
+  .btn-outline:hover { background: var(--primary); color: white; }
+  .btn-danger { background: #e53935; color: white; }
+  .btn-danger:hover { background: #c62828; transform: translateY(-1px); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
+  .btn-sm { padding: 7px 14px; font-size: 0.82rem; }
+
+  /* FORM ELEMENTS */
+  select, .form-input {
+    padding: 10px 14px; border: 2px solid var(--border); border-radius: 8px;
+    font-size: 0.9rem; font-family: inherit; background: white; color: var(--text);
+    transition: border-color 0.2s; min-width: 200px;
+  }
+  select:focus, .form-input:focus { outline: none; border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(26,184,184,0.1); }
+
+  /* CHECKBOX GRID */
+  .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; max-height: 380px; overflow-y: auto; padding: 4px; }
+  .checkbox-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border: 2px solid var(--border); border-radius: 8px; cursor: pointer;
+    transition: all 0.15s; background: white;
+  }
+  .checkbox-item:hover { border-color: var(--primary-light); background: #f0fafb; }
+  .checkbox-item input { width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary-light); }
+  .checkbox-item label { cursor: pointer; font-size: 0.88rem; flex: 1; }
+  .checkbox-item.checked { border-color: var(--primary-light); background: #e8f9f9; }
+
+  /* SELECT ALL BAR */
+  .select-all-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; padding: 10px 14px; background: #f8fafb; border-radius: 8px; border: 1px solid var(--border); }
+
+  /* INFO BADGE */
+  .badge { padding: 4px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; }
+  .badge-teal { background: #e0f7f7; color: var(--primary); }
+  .badge-green { background: #e8f5e9; color: #2e7d32; }
+  .badge-red { background: #fce4ec; color: #c62828; }
+  .badge-amber { background: #fff8e1; color: #f57f17; }
+
+  /* STAT CARDS */
+  .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat-card { background: white; border-radius: 10px; padding: 16px; text-align: center; border: 1px solid var(--border); box-shadow: var(--shadow); }
+  .stat-num { font-size: 1.6rem; font-weight: 800; color: var(--primary); }
+  .stat-label { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+  /* REPORT CARDS */
+  .report-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+  .report-card { background: white; border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: all 0.2s; }
+  .report-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.1); transform: translateY(-2px); }
+  .report-card h3 { font-size: 1rem; color: var(--primary); margin-bottom: 6px; }
+  .report-card p { font-size: 0.82rem; color: var(--muted); margin-bottom: 14px; line-height: 1.5; }
+
+  /* MODAL */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(2px); }
+  .modal { background: white; border-radius: 16px; padding: 28px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal-title { font-size: 1.2rem; font-weight: 700; color: var(--primary); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid var(--border); }
+  .modal-footer { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* DETAIL TABLE */
+  .detail-table { width: 100%; }
+  .detail-table tr td:first-child { font-weight: 600; color: var(--muted); padding: 8px 12px 8px 0; white-space: nowrap; width: 40%; }
+  .detail-table tr td:last-child { padding: 8px 0; font-weight: 500; }
+
+  /* TOAST */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #1e293b; color: white; padding: 14px 20px; border-radius: 10px; font-size: 0.9rem; z-index: 9999; box-shadow: 0 8px 24px rgba(0,0,0,0.2); max-width: 360px; animation: slideIn 0.3s ease; }
+  .toast.success { background: #166534; border-left: 4px solid #22c55e; }
+  .toast.error { background: #7f1d1d; border-left: 4px solid #ef4444; }
+  @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ROW TOOLBAR */
+  .row-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+
+  /* LOADING */
+  .loading { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.9rem; }
+  .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--primary-light); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state { text-align: center; padding: 40px; color: var(--muted); }
+  .empty-state .icon { font-size: 3rem; margin-bottom: 12px; }
+  .divider { height: 1px; background: var(--border); margin: 20px 0; }
+  .flex-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .confirm-check-wrap { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: #fff8e1; border-radius: 8px; border: 1px solid #f59e0b; margin: 12px 0; cursor: pointer; }
+  .confirm-check-wrap input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  /* ===== KAVANI PANEL (Dashboard) ===== */
+  .kavani-panel { background: #fff8e1; border: 2px solid #f59e0b; border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .kavani-title { font-size: 1rem; font-weight: 700; color: #b45309; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .alert-card {
+    background: white; border: 2px solid #fbbf24; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 10px; cursor: pointer; transition: all 0.15s;
+  }
+  .alert-card:hover { background: #fff3e0; transform: translateY(-1px); }
+  .alert-card-title { font-weight: 700; font-size: 0.92rem; color: #5d3c00; margin-bottom: 6px; }
+  .alert-card-prices { color: #c62828; font-weight: 700; font-size: 0.85rem; margin-top:4px; }
+
+  /* Fuzzy cluster cards — different colors */
+  .fuzzy-card-0 { background: #fff3e0; border-color: #f59e0b; }
+  .fuzzy-card-1 { background: #fce4ec; border-color: #e91e63; }
+  .fuzzy-card-2 { background: #f3e5f5; border-color: #9c27b0; }
+  .fuzzy-card-3 { background: #e8f5e9; border-color: #43a047; }
+  .fuzzy-card-4 { background: #e3f2fd; border-color: #1976d2; }
+  .fuzzy-card-5 { background: #e0f2f1; border-color: #00796b; }
+  .fuzzy-card-6 { background: #fbe9e7; border-color: #ff5722; }
+  .fuzzy-card-7 { background: #f9fbe7; border-color: #afb42b; }
+  .fuzzy-variant { font-size: 0.82rem; color: #4a148c; padding: 2px 0; }
+
+  /* ==========================================================
+     MOBILE RESPONSIVE — சில்லறை செலவினம் app-ல் செய்தது போலவே
+     ========================================================== */
+  @media (max-width: 720px) {
+    .header-inner { padding: 14px 16px; gap: 12px; }
+    .header-icon { font-size: 2rem; }
+    .header-title h1 { font-size: 1.05rem; }
+    .header-title p { font-size: 0.75rem; }
+    .header-status { margin-left: 0; font-size: 0.72rem; padding: 5px 10px; }
+
+    .nav-inner {
+      padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+      flex-wrap: nowrap; scrollbar-width: thin;
+    }
+    .tab-btn {
+      padding: 12px 14px; font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;
+    }
+
+    .main { padding: 14px 10px; }
+    .card { padding: 14px; border-radius: 10px; }
+    .card-title { font-size: 1rem; }
+
+    .search-box input { padding: 12px 12px 12px 42px; font-size: 0.95rem; }
+
+    /* ===== அட்டவணைகளை (tables) horizontal scroll இல்லாமல்,
+       ஒவ்வொரு row-ஐயும் ஒரு தனி "card" ஆக நிலைக்குத்தாக (vertical) காட்டுவது ===== */
+    .table-wrap { overflow-x: visible; border: none; border-radius: 0; }
+    .table-wrap table { width: 100%; }
+    .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+    .table-wrap tbody, .table-wrap tr { display: block; width: 100%; }
+    .table-wrap tr {
+      background: white; border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 10px; padding: 6px 4px; box-shadow: var(--shadow);
+    }
+    .table-wrap tr:nth-child(even) { background: white; } /* zebra-striping mobile-ல் தேவையில்லை */
+    .table-wrap td {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 8px 12px; border-bottom: 1px solid #f1f5f9; text-align: right; white-space: normal;
+    }
+    .table-wrap td:last-child { border-bottom: none; }
+    .table-wrap td[data-label]::before {
+      content: attr(data-label); font-weight: 600; color: var(--muted);
+      font-size: 0.78rem; text-align: left; flex-shrink: 0;
+    }
+    /* Colspan-கொண்ட empty-state / loading rows-க்கு card look தேவையில்லை */
+    .table-wrap td[colspan] {
+      display: block; text-align: center; border: none; padding: 20px 8px;
+    }
+    /* Reclaim rows-ல் முதல் column (checkbox) label தேவையில்லை, சிறியதா இருக்கணும் */
+    .table-wrap td:first-child:not([data-label]) { justify-content: center; }
+
+    .btn { padding: 10px 16px; font-size: 0.85rem; }
+    .btn-sm { padding: 6px 11px; font-size: 0.78rem; }
+
+    select, .form-input { min-width: 0; width: 100%; font-size: 0.88rem; }
+
+    .checkbox-grid { grid-template-columns: 1fr; max-height: 300px; }
+    .report-grid { grid-template-columns: 1fr; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .stat-num { font-size: 1.3rem; }
+
+    .modal { padding: 18px; border-radius: 12px; max-width: 100%; }
+    .modal-title { font-size: 1.05rem; }
+    .modal-footer { flex-wrap: wrap; }
+    .modal-footer .btn { flex: 1; min-width: 120px; }
+
+    .row-toolbar { gap: 8px; }
+    .flex-row { gap: 8px; }
+
+    .toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+
+    .ticker-content { font-size: 11.5px; }
+    .ticker-label { font-size: 10px; padding: 0 8px; }
+  }
+
+  @media (max-width: 420px) {
+    .header-title h1 { font-size: 0.95rem; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .tab-btn { padding: 10px 11px; font-size: 0.75rem; }
+  }
+
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-inner">
+    <div class="header-icon">📚</div>
+    <div class="header-title">
+      <h1>மாவட்ட மைய நூலகம்</h1>
+      <p>{{DISTRICT_NAME}} — புதிய நூல்கள் பகிர்மானம் 2026-27</p>
+    </div>
+    <div class="header-status" id="dataStatus">⏳ ஏற்றுகிறது...</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:auto;background:rgba(255,255,255,0.15);padding:6px 12px;border-radius:8px;">
+      <span style="font-size:0.85rem;color:#fff;font-weight:700;">🔄 ஆண்டு:</span>
+      <select id="yearSelect" onchange="onYearChange(this.value)" style="border-radius:6px;padding:4px 8px;font-weight:700;border:none;"></select>
+    </div>
+    <button onclick="exitApp()" style="margin-left:16px;background:#ef4444;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;gap:6px;" title="வெளியேறு">🚪 வெளியேறு</button>
+  </div>
+</div>
+
+<!-- LIVE TICKER -->
+<div class="ticker-bar" id="tickerBar">
+  <div class="ticker-label">🔴 LIVE</div>
+  <div class="ticker-track">
+    <div class="ticker-content" id="tickerContent">
+      📚 ஏற்றுகிறது...
+    </div>
+  </div>
+</div>
+
+<!-- NAV -->
+<div class="nav">
+  <div class="nav-inner">
+    <button class="tab-btn active" onclick="showPage('page-distribute', this)">🔀 பிரிக்க</button>
+    <button class="tab-btn" onclick="showPage('page-send', this)">📤 அனுப்ப</button>
+    <button class="tab-btn" onclick="showPage('page-reports', this)">📊 அறிக்கைகள்</button>
+    <button class="tab-btn" onclick="showPage('page-kavani', this)">⚠️ கவனிக்க</button>
+    <button class="tab-btn" id="btnRenumber" onclick="openRenumberChoice()">🔢 பதிவெண் மாற்ற</button>
+    <button class="tab-btn" id="btnRestore" onclick="openRestoreModal()">🗄️ Master Data Restore</button>
+    <button class="tab-btn" id="btnReclaim" onclick="showPage('page-reclaim', this)">🗑️ தவறான பதிவு நீக்கம்</button>
+    <button class="tab-btn" id="btnChangePwd" onclick="openChangePwdModal()">🔑 கடவுச்சொல் மாற்ற</button>
+    <button class="tab-btn" id="btnDownloadExcel" onclick="openDownloadExcelModal()">📥 Excel பதிவிறக்கம்</button>
+    <button class="tab-btn" id="btnLibrarianYear" onclick="openLibrarianYearModal()">🧑‍💼 நூலகர் பார்வை ஆண்டு</button>
+    <button class="tab-btn" id="btnUploadExcel" onclick="openUploadExcelModal()">📤 Excel அப்லோட்</button>
+    <button class="tab-btn" id="btnIsbnLookup" onclick="openIsbnLookupModal()">🌐 ISBN → தலைப்பு தேடு</button>
+  </div>
+</div>
+
+<div class="main">
+
+<!-- ===== PAGE 1: பிரிக்க ===== -->
+<div class="page active" id="page-distribute">
+
+  <!-- Multi-price alert banner -->
+  <div id="multiPriceBanner" style="display:none;" class="kavani-panel">
+    <div class="kavani-title">⚠️ கவனிக்க — ஒரே தலைப்பில் வேறு விலைகள் உள்ளன (Dashboard)</div>
+    <div id="multiPriceList"></div>
+  </div>
+
+  <!-- Multi-ISBN alert banner -->
+  <div id="multiIsbnBanner" style="display:none;" class="kavani-panel">
+    <div class="kavani-title">⚠️ கவனிக்க — ஒரே தலைப்பில் வேறு வேறு ISBN உள்ளன (பாகங்களாக இருக்கலாம்)</div>
+    <div id="multiIsbnList"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🔍 புத்தகம் தேடுக</div>
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="தலைப்பு தட்டச்சு செய்யவும் (குறைந்தது 2 எழுத்துக்கள்)..." oninput="onSearch()">
+    </div>
+    <div id="searchStatus" style="color:var(--muted);font-size:0.85rem;margin-bottom:8px;"></div>
+    <div class="table-wrap">
+      <table id="resultsTable">
+        <thead><tr><th>#</th><th>தலைப்பு</th><th>பதிப்பகம்</th><th>விலை</th><th>எண்ணிக்கை</th></tr></thead>
+        <tbody id="resultsBody">
+          <tr><td colspan="5"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="row-toolbar" style="margin-top:14px;">
+      <button class="btn btn-primary" onclick="openBookDetail()">📖 தேர்ந்தெடு & விவரங்கள் பார்க்க</button>
+      <span id="selectedInfo" style="color:var(--muted);font-size:0.85rem;"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE 2: அனுப்ப ===== -->
+<div class="page" id="page-send">
+  <div class="card">
+    <div class="card-title">📤 புத்தகங்கள் அனுப்ப</div>
+    <div class="flex-row" style="margin-bottom:16px;">
+      <div>
+        <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">SET NUMBER தேர்வு</label>
+        <select id="sendSetSelect" style="min-width:260px;">
+          <option>-- ஏற்றுகிறது --</option>
+        </select>
+      </div>
+      <button class="btn btn-outline btn-sm" id="sendRefreshBtn" onclick="refreshSendSets()" style="margin-top:22px;">🔄 புதுப்பி</button>
+      <button class="btn btn-primary btn-sm" onclick="loadSendLibraries()" style="margin-top:22px;">நூலகங்கள் காண்பி →</button>
+    </div>
+    <div id="sendInfo" style="color:var(--muted);font-size:0.88rem;margin-bottom:14px;padding:8px 12px;background:#f8fafb;border-radius:6px;display:none;"></div>
+
+    <div id="sendLibsSection" style="display:none;">
+      <div class="card-title" style="margin-bottom:12px;">🏷️ நூலகங்கள் தேர்வு செய்யவும்</div>
+      <div class="select-all-bar">
+        <input type="checkbox" id="sendSelectAll" onchange="toggleSendSelectAll()" style="width:18px;height:18px;accent-color:var(--primary-light);">
+        <label for="sendSelectAll" style="font-weight:600;cursor:pointer;">அனைத்தும் தேர்வு</label>
+        <span id="sendCheckCount" class="badge badge-teal" style="margin-left:auto;"></span>
+      </div>
+      <div class="checkbox-grid" id="sendLibsGrid"></div>
+      <div style="margin-top:20px;">
+        <button class="btn btn-success" style="font-size:1rem;padding:14px 28px;" onclick="markSent()">✅ அனுப்பியதாக பதிவு செய் (Mark as Sent)</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE: தவறான பதிவு நீக்கம் (RECLAIM) ===== -->
+<div class="page" id="page-reclaim">
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">♻️ இப்போது Pool-ல் இருக்கும் Reclaim எண்கள்</div>
+    <div id="reclaimPoolStatus" style="font-size:0.88rem;color:var(--muted);">ஏற்றுகிறது...</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🔍 தலைப்பு தேடி, தவறாக பிரிக்க/அனுப்ப ஆன புத்தகங்களை நீக்கவும்</div>
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="reclaimSearchInput" placeholder="தலைப்பு தட்டச்சு செய்யவும் (குறைந்தது 2 எழுத்துக்கள்)..." oninput="onReclaimSearch()">
+    </div>
+    <div id="reclaimSearchStatus" style="color:var(--muted);font-size:0.85rem;margin-bottom:8px;"></div>
+    <div class="table-wrap">
+      <table id="reclaimSearchTable">
+        <thead><tr><th>#</th><th>தலைப்பு</th><th>பதிப்பகம்</th><th>விலை</th><th>பிரிக்கப்பட்ட எண்ணிக்கை</th></tr></thead>
+        <tbody id="reclaimSearchBody">
+          <tr><td colspan="5"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" id="reclaimRowsSection" style="display:none;margin-top:16px;">
+    <div class="card-title" id="reclaimRowsTitle">📋 பிரிக்கப்பட்ட நூலகங்கள்</div>
+    <div class="select-all-bar">
+      <input type="checkbox" id="reclaimSelectAll" onchange="toggleReclaimSelectAll()" style="width:18px;height:18px;accent-color:var(--primary-light);">
+      <label for="reclaimSelectAll" style="font-weight:600;cursor:pointer;">அனைத்தும் தேர்வு</label>
+      <span id="reclaimCheckCount" class="badge badge-teal" style="margin-left:auto;"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="reclaimRowsTable">
+        <thead><tr><th></th><th>வ.எண்</th><th>நூலகம் பெயர்</th><th>மைய நூலக சேர்க்கை எண்</th><th>கிளை நூலக சேர்க்கை எண்</th><th>Set</th><th>அனுப்பப்பட்டதா</th></tr></thead>
+        <tbody id="reclaimRowsBody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:16px;">
+      <button class="btn btn-danger" style="font-size:1rem;padding:14px 28px;" onclick="reclaimSelected()">🗑️ தேர்ந்தெடுத்தவற்றை மீளப்பெறு (Reclaim)</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE 4: கவனிக்க ===== -->
+<div class="page" id="page-kavani">
+  <div style="max-width:900px;margin:0 auto;">
+
+    <!-- SECTION 0: பதிப்பகம் Search -->
+    <div class="kavani-panel" style="border:2px solid #0d9488;background:#f0fdfa;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div class="kavani-title" style="color:#0f766e;">🔎 பதிப்பகம் வாரியான முழு விவரம்</div>
+        <p style="font-size:0.85rem;color:#115e59;margin:2px 0 0;">ஒரு பதிப்பகத்தைத் தேடி, அதற்குரிய அனைத்து புத்தகங்களின் விவரத்தையும் (பிரித்தது/அனுப்பியது உட்பட) PDF அறிக்கையாகப் பெறலாம்.</p>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="openPublisherSearchModal()">🔎 பதிப்பகம் Search</button>
+    </div>
+
+    <!-- SECTION 1: வேறு விலைகள் -->
+    <div class="kavani-panel" style="border:2px solid #e53935;background:#fff5f5;margin-bottom:18px;">
+      <div class="kavani-title" style="display:flex;justify-content:space-between;align-items:center;color:#b71c1c;">
+        <span>🔴 ஒரே தலைப்பில் வேறு வேறு விலைகள்</span>
+        <button class="btn btn-outline btn-sm" onclick="loadKavaniMultiPrice()" style="font-size:0.8rem;padding:6px 12px;">🔄 புதுப்பி</button>
+      </div>
+      <p style="font-size:0.85rem;color:#7f1d1d;margin-bottom:10px;">பிரிக்கப்படாத புத்தகங்களில் ஒரே தலைப்புக்கு வெவ்வேறு விலைகள் உள்ளன — சரிபார்க்கவும்.</p>
+      <div id="kavaniMultiPriceStatus" style="font-size:0.85rem;color:#6b7280;margin-bottom:8px;"></div>
+      <div id="kavaniMultiPriceList" style="max-height:38vh;overflow-y:auto;"></div>
+    </div>
+
+    <!-- SECTION 1.5: வேறு வேறு ISBN -->
+    <div class="kavani-panel" style="border:2px solid #6d28d9;background:#f5f3ff;margin-bottom:18px;">
+      <div class="kavani-title" style="display:flex;justify-content:space-between;align-items:center;color:#5b21b6;">
+        <span>🟣 ஒரே தலைப்பில் வேறு வேறு ISBN (பாகங்களாக இருக்கலாம்)</span>
+        <button class="btn btn-outline btn-sm" onclick="loadKavaniMultiIsbn()" style="font-size:0.8rem;padding:6px 12px;">🔄 புதுப்பி</button>
+      </div>
+      <p style="font-size:0.85rem;color:#4c1d95;margin-bottom:10px;">
+        இவை பாகம் 1, பாகம் 2 போன்று வெவ்வேறு புத்தகங்களாக இருக்கலாம் — தலைப்பை
+        (Admin மூலம்) தனித்தனியாக மாற்றாத வரை பிரிக்க அனுமதிக்கப்படாது.
+      </p>
+      <div id="kavaniMultiIsbnStatus" style="font-size:0.85rem;color:#6b7280;margin-bottom:8px;"></div>
+      <div id="kavaniMultiIsbnList" style="max-height:38vh;overflow-y:auto;"></div>
+    </div>
+
+    <!-- SECTION 2: Fuzzy Match -->
+    <div class="kavani-panel">
+      <div class="kavani-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>⚠️ கவனிக்க — 85% ஒத்த தலைப்புகள் (Fuzzy Match)</span>
+        <button id="fuzzyResetBtn" class="btn btn-outline btn-sm" onclick="resetFuzzyCache()" style="font-size:0.8rem;padding:6px 12px;">🔄 மீண்டும் கணக்கிடு</button>
+      </div>
+      <p style="font-size:0.85rem;color:#78350f;margin-bottom:14px;">கீழ்க்கண்ட தலைப்புகள் ஒத்திருக்கின்றன — வெவ்வேறு Spellings இருக்கலாம். சரிபார்க்கவும்.</p>
+      <div id="kavaniPageStatus" style="color:var(--muted);font-size:0.85rem;margin-bottom:10px;"></div>
+      <!-- Progress bar -->
+      <div id="fuzzyProgressWrap" style="display:none;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#92400e;margin-bottom:4px;">
+          <span>🔍 GAS algorithm மூலம் ஒத்த தலைப்புகள் கண்டறிகிறது...</span>
+          <span id="fuzzyProgressPct">0%</span>
+        </div>
+        <div style="background:#fde68a;border-radius:8px;height:10px;overflow:hidden;">
+          <div id="fuzzyProgressBar" style="height:100%;background:linear-gradient(90deg,#f59e0b,#d97706);border-radius:8px;width:0%;transition:width 0.4s ease;"></div>
+        </div>
+      </div>
+      <div id="kavaniPageList" style="max-height:45vh;overflow-y:auto;padding-right:4px;"></div>
+    </div><!-- end section 2 -->
+  </div>
+</div>
+
+<!-- ===== PAGE 3: அறிக்கைகள் ===== -->
+<div class="page" id="page-reports">
+
+  <div class="report-grid">
+    <div class="report-card">
+      <h3>📅 அறிக்கை 1 — தேதி வாரிய பணி விவரம்</h3>
+      <p>தேதி வாரியாக பிரிக்கப்பட்ட பதிப்பகங்கள் மற்றும் நூல்கள் எண்ணிக்கை</p>
+      <button class="btn btn-primary btn-sm" onclick="genReport(1)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card">
+      <h3>📊 அறிக்கை 2 — மொத்த நிலை விவரம்</h3>
+      <p>பெறப்பட்டது / பிரிக்கப்பட்டது / மீதம் / அனுப்பப்பட்டது ஆகியவற்றின் சுருக்கம்</p>
+      <button class="btn btn-primary btn-sm" onclick="genReport(2)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card">
+      <h3>🏛️ அறிக்கை 3 — நூலக வகை + நூலகம் வாரிய நிலை</h3>
+      <p>நூலக வகை வாரியாகவும், ஒவ்வொரு நூலகம் வாரியாகவும் விரிவான நிலை</p>
+      <button class="btn btn-primary btn-sm" onclick="genReport(3)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card">
+      <h3>⏳ அறிக்கை 4 — பிரிக்கப்படாதவை பதிப்பகம் வாரியம்</h3>
+      <p>இதுவரை பிரிக்கப்படாத பதிப்பகங்கள் மற்றும் நூல்கள் விவரம்</p>
+      <button class="btn btn-primary btn-sm" onclick="genReport(4)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:var(--primary-light);">
+      <h3>📋 அறிக்கை 5 — நூலகம் வாரியான புத்தக விவரம்</h3>
+      <p>தேர்ந்தெடுக்கப்பட்ட நூலகத்திற்கு அனுப்பப்படும் அனைத்து புத்தகங்களின் முழு விவரம்</p>
+      <div class="flex-row" style="margin-bottom:12px;flex-wrap:nowrap;">
+        <select id="r5LibSelect" style="flex:1;min-width:0;">
+          <option>-- ஏற்றுகிறது --</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="loadR5Libs()">🔄</button>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="genReport5()">📄 அறிக்கை 5 உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:#f59e0b;">
+      <h3>⚠️ அறிக்கை 6 — 85% ஒத்த தலைப்புகள்</h3>
+      <p>ஒரே மாதிரியான spelling உடைய தலைப்புகளை கண்டறிந்து பட்டியல் இடுகிறது</p>
+      <button class="btn btn-primary btn-sm" onclick="showPage('page-kavani', document.querySelector('.tab-btn:nth-child(4)'))">⚠️ கவனிக்க Tab திற</button>
+    </div>
+    <div class="report-card" style="border-color:#0d9488;">
+      <h3>📒 அறிக்கை 7 — மைய நூல் சேர்க்கை பதிவேடு</h3>
+      <p>மையப் பதிவெண் வாரியாக 5000 வீதம் பகுதிகளாக பிரிந்து வரும். தேவையான பகுதியை தேர்வு செய்து அறிக்கை உருவாக்குக.</p>
+      <div style="margin-bottom:10px;">
+        <button class="btn btn-outline btn-sm" onclick="loadR7Ranges()" id="r7LoadBtn">🔄 பகுதிகள் ஏற்று</button>
+        <span id="r7TotalInfo" style="font-size:0.82rem;color:var(--primary);margin-left:8px;"></span>
+      </div>
+      <div id="r7ChunkList" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px 8px;display:none;margin-bottom:10px;background:#f9fafb;">
+        <div style="display:flex;gap:8px;margin-bottom:6px;align-items:center;">
+          <input type="checkbox" id="r7SelectAll" onchange="r7ToggleAll(this)" style="accent-color:var(--primary);width:15px;height:15px;">
+          <label for="r7SelectAll" style="font-size:0.83rem;font-weight:600;cursor:pointer;">அனைத்தும் தேர்வு</label>
+        </div>
+        <div id="r7Items"></div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="genReport7()">📄 தேர்வு செய்த பகுதி அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:#dc2626;">
+      <h3>🔴 அறிக்கை 8 — அனுப்பப்பட்டவற்றில் வேறு விலை தலைப்புகள்</h3>
+      <p>அனுப்பப்பட்ட நூல்களில் ஒரே தலைப்புக்கு வேறு வேறு விலைகள் உள்ளவை, அவை அனுப்பப்பட்ட நூலகங்கள் பட்டியலுடன் (ஒரே ஒரு நூலகத்திற்கு மட்டும் சென்றிருந்தாலும் காட்டப்படும்)</p>
+      <button class="btn btn-primary btn-sm" onclick="genReport(8)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /main -->
+
+<!-- ===== BOOK DETAIL MODAL ===== -->
+<div class="modal-overlay" id="modalDetail" style="display:none;" onclick="if(event.target===this)closeModal('modalDetail')">
+<div class="modal">
+  <div class="modal-title">📖 புத்தக விவரங்கள்</div>
+  <table class="detail-table" id="detailTable"></table>
+  <div class="confirm-check-wrap" onclick="toggleConfirm()">
+    <input type="checkbox" id="confirmCheck" onchange="updateProceedBtn()">
+    <label for="confirmCheck" id="confirmLabel" style="cursor:pointer;font-weight:500;"></label>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalDetail')">✕ மூடு</button>
+    <button class="btn btn-primary" id="proceedBtn" onclick="openLibTypeModal()" disabled>🏷️ நூலக வகை தேர்வு →</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== LIB TYPE MODAL ===== -->
+<div class="modal-overlay" id="modalLibType" style="display:none;" onclick="if(event.target===this)closeModal('modalLibType')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">🏷️ நூலக வகை தேர்வு</div>
+  <select id="libTypeSelect" style="width:100%;padding:12px;font-size:1rem;font-family:inherit;border:2px solid var(--border);border-radius:8px;"></select>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalLibType')">✕ மூடு</button>
+    <button class="btn btn-primary" onclick="openLibrariesModal()">தொடரவும் →</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== LIBRARIES MODAL ===== -->
+<div class="modal-overlay" id="modalLibraries" style="display:none;" onclick="if(event.target===this)closeModal('modalLibraries')">
+<div class="modal" style="max-width:700px;">
+  <div class="modal-title">🏛️ நூலகங்கள் & Set Number தேர்வு</div>
+  <div id="libTypeInfo" style="padding:8px 12px;background:#e0f7f7;border-radius:8px;margin-bottom:14px;font-size:0.88rem;color:var(--primary);font-weight:600;"></div>
+  <div class="select-all-bar">
+    <input type="checkbox" id="assignSelectAll" onchange="toggleAssignSelectAll()" style="width:18px;height:18px;accent-color:var(--primary-light);">
+    <label for="assignSelectAll" style="font-weight:600;cursor:pointer;">அனைத்தும் தேர்வு</label>
+    <span id="assignCheckCount" class="badge badge-teal" style="margin-left:auto;"></span>
+  </div>
+  <div class="checkbox-grid" id="libsCheckboxGrid" style="margin-bottom:16px;"></div>
+  <div class="divider"></div>
+  <div class="flex-row" style="align-items:center;">
+    <label style="font-weight:600;">📦 SET NUMBER :</label>
+    <select id="setNumSelect" style="min-width:160px;"></select>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalLibraries')">✕ மூடு</button>
+    <button class="btn btn-success" style="font-size:1rem;padding:12px 24px;" onclick="assignBooks()">✅ பதிவு செய் (Assign)</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== RENUMBER CHOICE MODAL ===== -->
+<div class="modal-overlay" id="modalRenumberChoice" style="display:none;" onclick="if(event.target===this)closeModal('modalRenumberChoice')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">🔢 பதிவெண் மாற்ற</div>
+  <div style="display:flex;flex-direction:column;gap:12px;">
+    <button class="btn btn-primary" style="padding:14px;" onclick="chooseRenumberCentral()">1️⃣ மையப் பதிவெண் மாற்ற விரும்புகிறேன்</button>
+    <button class="btn btn-primary" style="padding:14px;" onclick="chooseRenumberBranch()">2️⃣ கிளைப் பதிவெண் மாற்ற விரும்புகிறேன்</button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalRenumberChoice')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== DOWNLOAD EXCEL MODAL (Admin மட்டும்) ===== -->
+<div class="modal-overlay" id="modalDownloadExcel" style="display:none;" onclick="if(event.target===this)closeModal('modalDownloadExcel')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">📥 Excel பதிவிறக்கம்</div>
+  <div style="font-size:0.85rem;color:#6b7280;margin-bottom:10px;">தேர்வு செய்யப்பட்ட ஆண்டு: <strong id="downloadExcelYearLabel"></strong> தரவு மட்டும் பதிவிறக்கம் ஆகும்</div>
+  <div style="display:flex;flex-direction:column;gap:12px;">
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="downloadExcelData('assigned')">
+      1️⃣ Assigned <span style="opacity:.85;font-size:.85em;">— பிரிக்க மட்டும் செய்த (இன்னும் அனுப்பாத) நூல்கள்</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="downloadExcelData('assigned_sent')">
+      2️⃣ Assigned &amp; Sent <span style="opacity:.85;font-size:.85em;">— பிரிக்க மற்றும் அனுப்ப இரண்டும் முடிந்த நூல்கள்</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="downloadExcelData('total')">
+      3️⃣ Total Data <span style="opacity:.85;font-size:.85em;">— அப்லோட் செய்த மொத்த தரவும் (assign-send ஆகாதவை உட்பட)</span>
+    </button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalDownloadExcel')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== RENUMBER CENTRAL MODAL ===== -->
+<div class="modal-overlay" id="modalRenumberCentral" style="display:none;" onclick="if(event.target===this)closeModal('modalRenumberCentral')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">1️⃣ மையப் பதிவெண் மாற்ற</div>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பிரிக்கும்போது பதிவாகக் கூடிய புதிய ஆரம்ப எண்</label>
+  <input type="number" id="renumberCentralInput" placeholder="எ.கா. 20001" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:1rem;">
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalRenumberCentral')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="saveCentralRenumberStart()">💾 சேவ் செய்</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== RENUMBER BRANCH MODAL (அனைத்து நூலகங்கள் — pagination) ===== -->
+<div class="modal-overlay" id="modalRenumberBranch" style="display:none;" onclick="if(event.target===this)closeModal('modalRenumberBranch')">
+<div class="modal" style="max-width:720px;display:flex;flex-direction:column;max-height:88vh;">
+  <div class="modal-title">2️⃣ கிளைப் பதிவெண் மாற்ற — அனைத்து நூலகங்கள்</div>
+  <div style="font-size:0.82rem;color:var(--muted);margin-bottom:10px;">
+    ஒவ்வொரு நூலகத்திற்கும் தேவையான புதிய கிளைப் பதிவெண்ணை (தொடக்க எண்) type செய்யவும்.
+    காலியாக விட்டவை மாறாது. பக்கம் மாறினாலும் உங்கள் entries நினைவில் இருக்கும்.
+  </div>
+  <div style="overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:8px;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.92rem;">
+      <thead style="position:sticky;top:0;background:var(--bg,#f5f5f5);">
+        <tr>
+          <th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);width:48px;">வ.எண்</th>
+          <th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);">நூலகம்</th>
+          <th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);width:110px;">தற்போதைய கிளைப்பதிவெண்</th>
+          <th style="padding:8px;text-align:left;border-bottom:1px solid var(--border);width:140px;">மாற்ற வேண்டிய கிளைப்பதிவெண்</th>
+        </tr>
+      </thead>
+      <tbody id="renumberBranchTableBody">
+        <tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted);">ஏற்றுகிறது...</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">
+    <button class="btn btn-outline" style="padding:6px 14px;" onclick="renumberBranchGoPage(renumberBranchState.page-1)">‹ முந்தைய</button>
+    <span id="renumberBranchPageLabel" style="font-size:0.85rem;color:var(--muted);">பக்கம் 1 / 1</span>
+    <button class="btn btn-outline" style="padding:6px 14px;" onclick="renumberBranchGoPage(renumberBranchState.page+1)">அடுத்தது ›</button>
+  </div>
+  <div id="renumberBranchEditedNote" style="font-size:0.82rem;color:var(--success,#1a7f37);margin-top:6px;"></div>
+  <div class="modal-footer" style="flex-shrink:0;">
+    <button class="btn btn-outline" onclick="closeModal('modalRenumberBranch')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="saveBranchRenumberBulk()">💾 அனைத்தையும் சேமி</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== MASTER DATA RESTORE MODAL ===== -->
+<div class="modal-overlay" id="modalRestore" style="display:none;" onclick="if(event.target===this)closeModal('modalRestore')">
+<div class="modal" style="max-width:500px;">
+  <div class="modal-title">🗄️ Master Data Restore</div>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">எந்த தேதிக்கான backup வேண்டும்?</label>
+  <select id="restoreSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+    <option>-- ஏற்றுகிறது --</option>
+  </select>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalRestore')">✕ மூடு</button>
+    <button class="btn btn-danger" onclick="restoreBackup()">♻️ மீட்டமைக்க</button>
+  </div>
+</div>
+</div>
+
+<div class="modal-overlay" id="modalChangePwd" style="display:none;" onclick="if(event.target===this)closeModal('modalChangePwd')">
+<div class="modal" style="max-width:420px;">
+  <div class="modal-title">🔑 கடவுச்சொல் மாற்ற</div>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">User</label>
+  <select id="pwdUserSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+    <option value="admin">Admin</option>
+    <option value="dclstaff">DCL Staff</option>
+  </select>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">புது Password (குறைந்தது 6 எழுத்துக்கள்)</label>
+  <input type="password" id="pwdNewInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">மீண்டும் Password</label>
+  <input type="password" id="pwdConfirmInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="pwdChangeMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalChangePwd')">✕ மூடு</button>
+    <button class="btn btn-danger" onclick="saveChangePassword()">💾 மாற்றவும்</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== ADMIN-ONLY: MULTI-ISBN தலைப்பு/ISBN மாற்று MODAL ===== -->
+<div class="modal-overlay" id="modalRenameIsbn" style="display:none;" onclick="if(event.target===this)closeModal('modalRenameIsbn')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">🟣 தலைப்பு / ISBN மாற்ற (Admin மட்டும்)</div>
+  <p style="font-size:0.85rem;color:#6b7280;margin-bottom:14px;">
+    கீழே உள்ள ISBN-க்குரிய அனைத்து பதிவுகளின் தலைப்பையும் / ISBN-ஐயும் மாற்றலாம்.
+    இரண்டு பாகங்களுக்கும் தலைப்பு முழுமையாக வேறுபடும் வரை போதும் — ஹைபன் (-)
+    அல்லது அடைப்புக்குறி ( ) எதை வேண்டுமானாலும் பயன்படுத்தலாம்
+    (எ.கா: "தலைப்பு - பாகம் 1" அல்லது "தலைப்பு (பாகம் 1)").
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ISBN</label>
+  <input type="text" id="renameIsbnOld" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">தற்போதைய தலைப்பு</label>
+  <input type="text" id="renameIsbnCurrentTitle" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பதிப்பகம்</label>
+  <input type="text" id="renameIsbnVendor" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Published Price (பதிப்பு விலை)</label>
+  <input type="text" id="renameIsbnPrice" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">புதிய தலைப்பு (விருப்பம்)</label>
+  <input type="text" id="renameIsbnNewTitle" placeholder="எ.கா. தலைப்பு - பாகம் 1 அல்லது தலைப்பு (பாகம் 1)" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">புதிய ISBN (விருப்பம்)</label>
+  <input type="text" id="renameIsbnNewIsbn" placeholder="தவறாக பதிவானால் மட்டும் மாற்றவும்" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="renameIsbnMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalRenameIsbn')">✕ மூடு</button>
+    <button class="btn btn-danger" onclick="submitRenameByIsbn()">💾 சேமி</button>
+  </div>
+</div>
+</div>
+
+<!-- பதிப்பகம் Search -->
+<div class="modal-overlay" id="modalPublisherSearch" style="display:none;" onclick="if(event.target===this)closeModal('modalPublisherSearch')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">🔎 பதிப்பகம் Search</div>
+  <p style="font-size:0.85rem;color:#6b7280;margin-bottom:14px;">
+    பதிப்பகம் பெயரில் குறைந்தது 4 எழுத்துகள் தட்டச்சு செய்யவும் — பொருந்தும் பதிப்பகங்கள் கீழே தோன்றும். ஒன்றைத் தேர்வு செய்யவும்.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பதிப்பகம் பெயர்</label>
+  <input type="text" id="publisherSearchInput" placeholder="குறைந்தது 4 எழுத்துகள்..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:8px;" oninput="onPublisherSearchInput()">
+  <div id="publisherSearchStatus" style="font-size:0.82rem;color:var(--muted);margin-bottom:6px;"></div>
+  <div id="publisherSearchResults" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;display:none;"></div>
+  <div id="publisherSearchSelected" style="margin-top:12px;font-size:0.9rem;font-weight:600;display:none;background:#f0fdfa;border:1px solid #0d9488;border-radius:8px;padding:10px;"></div>
+  <div id="publisherSearchMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalPublisherSearch')">✕ மூடு</button>
+    <button class="btn btn-primary" id="publisherSearchConfirmBtn" onclick="confirmPublisherReport()" disabled>📄 உறுதி செய்து அறிக்கை உருவாக்கு</button>
+  </div>
+</div>
+</div>
+
+<!-- நூலகர் பார்வை ஆண்டு (Admin மட்டும்) -->
+<div class="modal-overlay" id="modalLibrarianYear" style="display:none;" onclick="if(event.target===this)closeModal('modalLibrarianYear')">
+<div class="modal" style="max-width:420px;">
+  <div class="modal-title">🧑‍💼 நூலகர் Login-க்கு எந்த ஆண்டு தெரிய வேண்டும்?</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px;">
+    நூலகர் (librarian) login செய்யும்போது, கீழே தேர்ந்தெடுக்கும் ஆண்டுக்குரிய புத்தகங்கள் மட்டுமே அவருக்குத் தெரியும்.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு</label>
+  <select id="librarianYearSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;"></select>
+  <div id="librarianYearMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalLibrarianYear')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="saveLibrarianYear()">💾 சேமி</button>
+  </div>
+</div>
+</div>
+
+<!-- Excel Upload (Admin மட்டும்) -->
+<div class="modal-overlay" id="modalUploadExcel" style="display:none;" onclick="if(event.target===this)closeModal('modalUploadExcel')">
+<div class="modal" style="max-width:460px;">
+  <div class="modal-title">📤 master_data Excel அப்லோட்</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px;">
+    கோப்பு பெயரில் ஆண்டு இருந்தால் (எ.கா <code>master_data_2025-2026.xlsx</code>) தானாக கண்டறியப்படும்.
+    இருக்கும் தரவு அழிக்கப்படாது — புதிய rows மட்டும் சேர்க்கப்படும்.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Excel கோப்பு (.xlsx)</label>
+  <input type="file" id="uploadExcelFile" accept=".xlsx,.xls" style="width:100%;margin-bottom:14px;" onchange="onUploadExcelFileChange()">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு (தானாக கண்டறியப்படவில்லை என்றால் தேர்ந்தெடுக்கவும்)</label>
+  <select id="uploadExcelYear" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;"></select>
+  <div id="uploadExcelMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalUploadExcel')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="doUploadExcel()">📤 அப்லோட் செய்</button>
+  </div>
+</div>
+</div>
+
+<!-- ISBN → இணையம் மூலம் தலைப்பு தேடு -->
+<div class="modal-overlay" id="modalIsbnLookup" style="display:none;" onclick="if(event.target===this)closeModal('modalIsbnLookup')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">🌐 ISBN → இணையம் மூலம் தலைப்பு தேடு</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px;">
+    ISBN எண்ணை கொடுத்தால், நமது தரவுத்தளத்தில் இல்லாவிட்டாலும், Google Books
+    இணையதளத்தில் தேடி தலைப்பு/ஆசிரியர்/பதிப்பகம் விவரங்களை காட்டும்.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ISBN எண்</label>
+  <div style="display:flex;gap:8px;margin-bottom:14px;">
+    <input type="text" id="isbnLookupInput" placeholder="எ.கா. 9789355730428" style="flex:1;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;" onkeydown="if(event.key==='Enter')searchIsbnOnline()">
+    <button class="btn btn-primary btn-sm" onclick="searchIsbnOnline()">🔍 தேடு</button>
+  </div>
+  <div id="isbnLookupStatus" style="font-size:0.85rem;color:var(--muted);margin-bottom:8px;"></div>
+  <div id="isbnLookupResult" style="display:none;background:#f0fdfa;border:1px solid #0d9488;border-radius:8px;padding:12px;font-size:0.88rem;line-height:1.7;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalIsbnLookup')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== LOADING OVERLAY ===== -->
+<div class="modal-overlay" id="loadingOverlay" style="display:none;">
+<div style="background:white;padding:32px 40px;border-radius:16px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
+  <div class="spinner" style="width:40px;height:40px;border-width:4px;margin:0 auto 16px;"></div>
+  <div style="font-size:1.1rem;font-weight:600;color:var(--primary);" id="loadingMsg">⏳ பதிவு செய்கிறது...</div>
+  <div style="color:var(--muted);font-size:0.85rem;margin-top:6px;">காத்திருக்கவும்</div>
+</div>
+</div>
+
+<script src="/appjs"></script>
+</body>
+</html>
