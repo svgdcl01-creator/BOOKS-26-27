@@ -83,7 +83,7 @@ LOGIN_HTML = """
 </style></head>
 <body>
 <div class="box">
-  <h2>📚 மாவட்ட மைய நூலகம், சிவகங்கை</h2>
+  <h2>📚 மாவட்ட நூலக ஆணைக்குழு, சிவகங்கை</h2>
   <form method="POST" action="/login">
     <label>பயனர் வகை (User)</label>
     <select name="username" id="userSelect" required onchange="togglePwd()">
