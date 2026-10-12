@@ -242,6 +242,10 @@
   .alert-card-title { font-weight: 700; font-size: 0.92rem; color: #5d3c00; margin-bottom: 6px; }
   .alert-card-prices { color: #c62828; font-weight: 700; font-size: 0.85rem; margin-top:4px; }
 
+  /* "பிரிக்க" பக்கத்தில் உள்ள எச்சரிக்கை பேனர்களுக்கு — சுமார் 2 அட்டைகள் உயரம், அதற்கு மேல் scroll */
+  .mini-scroll-list { max-height: 190px; overflow-y: auto; padding-right: 6px; }
+  .mini-scroll-list .alert-card { margin-bottom: 8px; }
+
   /* Fuzzy cluster cards — different colors */
   .fuzzy-card-0 { background: #fff3e0; border-color: #f59e0b; }
   .fuzzy-card-1 { background: #fce4ec; border-color: #e91e63; }
@@ -347,9 +351,20 @@
       <p>{{DISTRICT_NAME}} — புதிய நூல்கள் பகிர்மானம் 2026-27</p>
     </div>
     <div class="header-status" id="dataStatus">⏳ ஏற்றுகிறது...</div>
-    <div style="display:flex;align-items:center;gap:6px;margin-left:auto;background:rgba(255,255,255,0.15);padding:6px 12px;border-radius:8px;">
+    <div id="yearWrap" style="display:flex;align-items:center;gap:6px;margin-left:auto;background:rgba(255,255,255,0.15);padding:6px 12px;border-radius:8px;">
       <span style="font-size:0.85rem;color:#fff;font-weight:700;">🔄 ஆண்டு:</span>
       <select id="yearSelect" onchange="onYearChange(this.value)" style="border-radius:6px;padding:4px 8px;font-weight:700;border:none;"></select>
+    </div>
+    <div id="wageCenterWrap" style="display:flex;align-items:center;gap:6px;margin-left:10px;background:rgba(255,255,255,0.15);padding:6px 12px;border-radius:8px;position:relative;">
+      <span style="font-size:0.85rem;color:#fff;font-weight:700;">🏷️ dcl staff-க்கான ஊதிய மையம் (அதிகபட்சம் 3):</span>
+      <button type="button" id="wageCenterBtn" onclick="toggleWageCenterPanel()" style="border-radius:6px;padding:4px 10px;font-weight:700;border:none;max-width:220px;background:#fff;color:#111;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">— அனைத்தும் —</button>
+      <div id="wageCenterPanel" style="display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);padding:10px;z-index:1000;min-width:240px;max-height:280px;overflow-y:auto;color:var(--text);">
+        <div id="wageCenterCheckboxList"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:8px;gap:8px;">
+          <button type="button" onclick="clearWageCenterSelection()" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border);background:#f9fafb;color:var(--text);cursor:pointer;font-size:0.8rem;">அனைத்தும்</button>
+          <button type="button" onclick="closeWageCenterPanel()" style="flex:1;padding:6px;border-radius:6px;border:none;background:var(--primary-light);color:#fff;cursor:pointer;font-size:0.8rem;">முடிந்தது</button>
+        </div>
+      </div>
     </div>
     <button onclick="exitApp()" style="margin-left:16px;background:#ef4444;color:white;border:none;border-radius:8px;padding:8px 20px;font-size:0.95rem;font-weight:700;cursor:pointer;gap:6px;" title="வெளியேறு">🚪 வெளியேறு</button>
   </div>
@@ -373,12 +388,14 @@
     <button class="tab-btn" onclick="showPage('page-reports', this)">📊 அறிக்கைகள்</button>
     <button class="tab-btn" onclick="showPage('page-kavani', this)">⚠️ கவனிக்க</button>
     <button class="tab-btn" id="btnRenumber" onclick="openRenumberChoice()">🔢 பதிவெண் மாற்ற</button>
-    <button class="tab-btn" id="btnRestore" onclick="openRestoreModal()">🗄️ Master Data Restore</button>
+    <button class="tab-btn" id="btnRestore" onclick="openMasterDataMenu()">🗄️ Master Data</button>
     <button class="tab-btn" id="btnReclaim" onclick="showPage('page-reclaim', this)">🗑️ தவறான பதிவு நீக்கம்</button>
     <button class="tab-btn" id="btnChangePwd" onclick="openChangePwdModal()">🔑 கடவுச்சொல் மாற்ற</button>
     <button class="tab-btn" id="btnDownloadExcel" onclick="openDownloadExcelModal()">📥 Excel பதிவிறக்கம்</button>
     <button class="tab-btn" id="btnLibrarianYear" onclick="openLibrarianYearModal()">🧑‍💼 நூலகர் பார்வை ஆண்டு</button>
     <button class="tab-btn" id="btnUploadExcel" onclick="openUploadExcelModal()">📤 Excel அப்லோட்</button>
+    <button class="tab-btn" id="btnUploadStateAcc" onclick="openUploadStateAccModal()">🏷️ மாநிலப் பதிவெண் புதுப்பி</button>
+    <button class="tab-btn" id="btnUploadBookCover" onclick="openBookCoverUploadModal()">🖼️ புத்தக முகப்பு அப்லோட்</button>
     <button class="tab-btn" id="btnIsbnLookup" onclick="openIsbnLookupModal()">🌐 ISBN → தலைப்பு தேடு</button>
   </div>
 </div>
@@ -391,27 +408,27 @@
   <!-- Multi-price alert banner -->
   <div id="multiPriceBanner" style="display:none;" class="kavani-panel">
     <div class="kavani-title">⚠️ கவனிக்க — ஒரே தலைப்பில் வேறு விலைகள் உள்ளன (Dashboard)</div>
-    <div id="multiPriceList"></div>
+    <div id="multiPriceList" class="mini-scroll-list"></div>
   </div>
 
   <!-- Multi-ISBN alert banner -->
   <div id="multiIsbnBanner" style="display:none;" class="kavani-panel">
     <div class="kavani-title">⚠️ கவனிக்க — ஒரே தலைப்பில் வேறு வேறு ISBN உள்ளன (பாகங்களாக இருக்கலாம்)</div>
-    <div id="multiIsbnList"></div>
+    <div id="multiIsbnList" class="mini-scroll-list"></div>
   </div>
 
   <div class="card">
     <div class="card-title">🔍 புத்தகம் தேடுக</div>
     <div class="search-box">
       <span class="search-icon">🔍</span>
-      <input type="text" id="searchInput" placeholder="தலைப்பு தட்டச்சு செய்யவும் (குறைந்தது 2 எழுத்துக்கள்)..." oninput="onSearch()">
+      <input type="text" id="searchInput" placeholder="தலைப்பு தட்டச்சு செய்யவும் (1 எழுத்து எனில் முழு தலைப்பு மட்டும் பொருந்தும்)..." oninput="onSearch()">
     </div>
     <div id="searchStatus" style="color:var(--muted);font-size:0.85rem;margin-bottom:8px;"></div>
     <div class="table-wrap">
       <table id="resultsTable">
-        <thead><tr><th>#</th><th>தலைப்பு</th><th>பதிப்பகம்</th><th>விலை</th><th>எண்ணிக்கை</th></tr></thead>
+        <thead><tr><th>#</th><th>தலைப்பு</th><th>எழுதியவர்</th><th>புத்தக முகப்பு</th><th>பதிப்பகம்</th><th>விலை</th><th>எண்ணிக்கை</th></tr></thead>
         <tbody id="resultsBody">
-          <tr><td colspan="5"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>
+          <tr><td colspan="7"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>
         </tbody>
       </table>
     </div>
@@ -564,22 +581,22 @@
     <div class="report-card">
       <h3>📅 அறிக்கை 1 — தேதி வாரிய பணி விவரம்</h3>
       <p>தேதி வாரியாக பிரிக்கப்பட்ட பதிப்பகங்கள் மற்றும் நூல்கள் எண்ணிக்கை</p>
-      <button class="btn btn-primary btn-sm" onclick="genReport(1)">📄 அறிக்கை உருவாக்கு</button>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:1})">📄 அறிக்கை உருவாக்கு</button>
     </div>
     <div class="report-card">
       <h3>📊 அறிக்கை 2 — மொத்த நிலை விவரம்</h3>
       <p>பெறப்பட்டது / பிரிக்கப்பட்டது / மீதம் / அனுப்பப்பட்டது ஆகியவற்றின் சுருக்கம்</p>
-      <button class="btn btn-primary btn-sm" onclick="genReport(2)">📄 அறிக்கை உருவாக்கு</button>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:2})">📄 அறிக்கை உருவாக்கு</button>
     </div>
     <div class="report-card">
       <h3>🏛️ அறிக்கை 3 — நூலக வகை + நூலகம் வாரிய நிலை</h3>
       <p>நூலக வகை வாரியாகவும், ஒவ்வொரு நூலகம் வாரியாகவும் விரிவான நிலை</p>
-      <button class="btn btn-primary btn-sm" onclick="genReport(3)">📄 அறிக்கை உருவாக்கு</button>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:3})">📄 அறிக்கை உருவாக்கு</button>
     </div>
     <div class="report-card">
-      <h3>⏳ அறிக்கை 4 — பிரிக்கப்படாதவை பதிப்பகம் வாரியம்</h3>
-      <p>இதுவரை பிரிக்கப்படாத பதிப்பகங்கள் மற்றும் நூல்கள் விவரம்</p>
-      <button class="btn btn-primary btn-sm" onclick="genReport(4)">📄 அறிக்கை உருவாக்கு</button>
+      <h3>🏢 அறிக்கை 4 — பதிப்பகம் வாரியாக புத்தகங்கள் விவரம்</h3>
+      <p>பெறப்பட்டவை / பிரிக்கப்படாதவை / பிரிக்கப்பட்டவை — வேண்டிய வகையைத் தேர்வு செய்யவும்</p>
+      <button class="btn btn-primary btn-sm" onclick="openReport4TypeModal()">📄 அறிக்கை உருவாக்கு</button>
     </div>
     <div class="report-card" style="border-color:var(--primary-light);">
       <h3>📋 அறிக்கை 5 — நூலகம் வாரியான புத்தக விவரம்</h3>
@@ -617,6 +634,26 @@
       <h3>🔴 அறிக்கை 8 — அனுப்பப்பட்டவற்றில் வேறு விலை தலைப்புகள்</h3>
       <p>அனுப்பப்பட்ட நூல்களில் ஒரே தலைப்புக்கு வேறு வேறு விலைகள் உள்ளவை, அவை அனுப்பப்பட்ட நூலகங்கள் பட்டியலுடன் (ஒரே ஒரு நூலகத்திற்கு மட்டும் சென்றிருந்தாலும் காட்டப்படும்)</p>
       <button class="btn btn-primary btn-sm" onclick="genReport(8)">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:#dc2626;">
+      <h3>🔴 அறிக்கை 9 — ஒரு நூலகத்தில் 2+ பிரதிகள் உள்ள தலைப்புகள்</h3>
+      <p>ஒரு நூலகத்திற்குள் ஒரே தலைப்பில் (100% ஒத்துப் போகும்) 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் உள்ள நூல்களின் முழு விவரம், நூலகம் வாரியாக பட்டியலிடப்பட்டது</p>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:9})">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:var(--primary-light);">
+      <h3>🖼️ அறிக்கை 10 — அறிக்கை 9 தலைப்புகளுக்கு Book Id, விலை, படம் + நூலகங்கள்</h3>
+      <p>அறிக்கை 9-ல் உள்ள (ஒரு நூலகத்தில் 2+ பிரதிகள் உள்ள) தலைப்புகளுக்கு மட்டும் — Book Id, தலைப்பு, விலை, முகப்புப் படம் மற்றும் அவை சென்றுள்ள நூலகங்கள் — தலைப்பு A-Z வரிசையில்</p>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:10})">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:#059669;">
+      <h3>🟢 அறிக்கை 11 — ஒரே நூலகத்தில் ஒரே தலைப்பு, ஒரே விலையில் 2+ பிரதிகள்</h3>
+      <p>ஒரு நூலகத்திற்குள்ளேயே ஒரே தலைப்பில் (capital/small letters மட்டும் புறக்கணிக்கப்படும், மற்றபடி exact match), ஒரே விலையில் 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் சென்றிருந்தால் மட்டும் — Book Id, விலை, முகப்புப் படம், நூலகங்கள் பட்டியலுடன்</p>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:11})">📄 அறிக்கை உருவாக்கு</button>
+    </div>
+    <div class="report-card" style="border-color:#0d5c63;">
+      <h3>📑 அறிக்கை 12 — நூலகம்/தலைப்பு நகல் சுருக்கம்</h3>
+      <p>ஒரு நூலகத்தில் ஒரே தலைப்புள்ள (விலை பொருட்படுத்தாமல்) 2 அல்லது அதற்கு மேற்பட்ட நூல்கள் — வ.எண், நூலகம், தலைப்பு, பதிப்பகம் மட்டும் கொண்ட சுருக்க பட்டியல்</p>
+      <button class="btn btn-primary btn-sm" onclick="openReportChoice({kind:'get', num:12})">📄 அறிக்கை உருவாக்கு</button>
     </div>
   </div>
 </div>
@@ -688,6 +725,45 @@
 </div>
 </div>
 
+<!-- ===== REPORT 4 — TYPE CHOICE MODAL ===== -->
+<div class="modal-overlay" id="modalReport4Type" style="display:none;" onclick="if(event.target===this)closeModal('modalReport4Type')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">🏢 அறிக்கை 4 — எந்த வகை?</div>
+  <div style="display:flex;flex-direction:column;gap:12px;">
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="chooseReport4Type('received')">
+      1️⃣ பெறப்பட்டவை <span style="opacity:.85;font-size:.85em;">— பிரிக்கப்பட்டது + பிரிக்கப்படாதது சேர்த்து அனைத்தும்</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="chooseReport4Type('unsplit')">
+      2️⃣ பிரிக்கப்படாதவை <span style="opacity:.85;font-size:.85em;">— இதுவரை பிரிக்கப்படாத நூல்கள் மட்டும்</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="chooseReport4Type('split')">
+      3️⃣ பிரிக்கப்பட்டவை <span style="opacity:.85;font-size:.85em;">— பிரிக்கப்பட்டு அனுப்பப்பட்ட நூல்கள் மட்டும்</span>
+    </button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalReport4Type')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== REPORT — PDF / EXCEL CHOICE MODAL (அறிக்கை 1,2,3,4,5,7 அனைத்திற்கும் பொதுவானது) ===== -->
+<div class="modal-overlay" id="modalReportChoice" style="display:none;" onclick="if(event.target===this)closeModal('modalReportChoice')">
+<div class="modal" style="max-width:420px;">
+  <div class="modal-title">📤 அறிக்கை — என்ன வடிவில் வேண்டும்?</div>
+  <div style="display:flex;flex-direction:column;gap:12px;">
+    <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="chooseReportView()">
+      📄 PDF <span style="opacity:.85;font-size:.85em;">— புதிய tab-ல் திறக்கும் (Ctrl+P → Save as PDF)</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;background:#0d9488;" onclick="chooseReportExcelDownload()">
+      📊 Excel <span style="opacity:.85;font-size:.85em;">— .xlsx கோப்பாக நேரடியாக பதிவிறக்கம்</span>
+    </button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalReportChoice')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
 <!-- ===== DOWNLOAD EXCEL MODAL (Admin மட்டும்) ===== -->
 <div class="modal-overlay" id="modalDownloadExcel" style="display:none;" onclick="if(event.target===this)closeModal('modalDownloadExcel')">
 <div class="modal" style="max-width:520px;">
@@ -702,6 +778,9 @@
     </button>
     <button class="btn btn-primary" style="padding:14px;text-align:left;" onclick="downloadExcelData('total')">
       3️⃣ Total Data <span style="opacity:.85;font-size:.85em;">— அப்லோட் செய்த மொத்த தரவும் (assign-send ஆகாதவை உட்பட)</span>
+    </button>
+    <button class="btn btn-primary" style="padding:14px;text-align:left;background:#6d28d9;" onclick="downloadExcelData('state_acc_template')">
+      4️⃣ மாநிலப் பதிவெண் Template <span style="opacity:.85;font-size:.85em;">— அனைத்து புத்தகங்களும் (பிரித்த + பிரிக்காதவை), ID + தற்போதைய மாநிலப் பதிவெண்</span>
     </button>
   </div>
   <div class="modal-footer">
@@ -731,6 +810,11 @@
     ஒவ்வொரு நூலகத்திற்கும் தேவையான புதிய கிளைப் பதிவெண்ணை (தொடக்க எண்) type செய்யவும்.
     காலியாக விட்டவை மாறாது. பக்கம் மாறினாலும் உங்கள் entries நினைவில் இருக்கும்.
   </div>
+  <div style="margin-bottom:10px;">
+    <input type="text" id="renumberBranchSearchInput" placeholder="🔍 நூலகம் பெயர் type செய்து தேடவும்..."
+           style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:0.95rem;box-sizing:border-box;"
+           oninput="renumberBranchFilter()">
+  </div>
   <div style="overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:8px;">
     <table style="width:100%;border-collapse:collapse;font-size:0.92rem;">
       <thead style="position:sticky;top:0;background:var(--bg,#f5f5f5);">
@@ -746,10 +830,8 @@
       </tbody>
     </table>
   </div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;">
-    <button class="btn btn-outline" style="padding:6px 14px;" onclick="renumberBranchGoPage(renumberBranchState.page-1)">‹ முந்தைய</button>
-    <span id="renumberBranchPageLabel" style="font-size:0.85rem;color:var(--muted);">பக்கம் 1 / 1</span>
-    <button class="btn btn-outline" style="padding:6px 14px;" onclick="renumberBranchGoPage(renumberBranchState.page+1)">அடுத்தது ›</button>
+  <div style="display:flex;align-items:center;justify-content:center;margin-top:10px;">
+    <span id="renumberBranchPageLabel" style="font-size:0.85rem;color:var(--muted);">ஏற்றுகிறது...</span>
   </div>
   <div id="renumberBranchEditedNote" style="font-size:0.82rem;color:var(--success,#1a7f37);margin-top:6px;"></div>
   <div class="modal-footer" style="flex-shrink:0;">
@@ -759,17 +841,168 @@
 </div>
 </div>
 
+<!-- ===== MASTER DATA MENU MODAL ===== -->
+<div class="modal-overlay" id="modalMasterDataMenu" style="display:none;" onclick="if(event.target===this)closeModal('modalMasterDataMenu')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">🗄️ Master Data</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:16px;">கீழே உள்ள மூன்று செயல்களில் ஒன்றை தேர்ந்தெடுக்கவும். மூன்றுக்குமே Admin password கேட்கப்படும்.</p>
+  <div style="display:flex;flex-direction:column;gap:10px;">
+    <button class="btn btn-outline" style="text-align:left;" onclick="closeModal('modalMasterDataMenu');openRestoreModal();">
+      ♻️ Master Data Restore<br><span style="font-weight:400;font-size:0.78rem;color:var(--muted);">ஏற்கனவே சேவ் செய்யப்பட்ட backup-ஐ மீட்டமைக்கும்</span>
+    </button>
+    <button class="btn btn-outline" style="text-align:left;" onclick="closeModal('modalMasterDataMenu');openMasterClearModal();">
+      🗑️ Master Data Clear<br><span style="font-weight:400;font-size:0.78rem;color:var(--muted);">தேர்ந்தெடுத்த ஆண்டின் தரவு மட்டும் முழுமையாக அழிக்கப்பட்டு, cmd prompt மூலம் புதிதாக ஏற்றுவதற்கு தயார் ஆகும்</span>
+    </button>
+    <button class="btn btn-outline" style="text-align:left;" onclick="closeModal('modalMasterDataMenu');openAssignClearModal();">
+      🔄 Master Assigning Data Clear<br><span style="font-weight:400;font-size:0.78rem;color:var(--muted);">தேர்ந்தெடுத்த ஆண்டுக்கு பிரிக்க/அனுப்பு தரவு அழிந்து, Central/Branch Number spool-ம் காலியாகி, மீண்டும் புதிதாக பிரிக்கும் நிலைக்கு வரும்</span>
+    </button>
+    <button class="btn btn-outline" style="text-align:left;" onclick="closeModal('modalMasterDataMenu');openPublisherClearModal();">
+      🏢 Master Publisher Clear<br><span style="font-weight:400;font-size:0.78rem;color:var(--muted);">தேர்ந்தெடுத்த பதிப்பகத்தின் தேர்ந்தெடுத்த ஆண்டுக்குரிய அனைத்து புத்தகங்களையும் முழுமையாக அழிக்கும்</span>
+    </button>
+    <button class="btn btn-outline" style="text-align:left;" onclick="closeModal('modalMasterDataMenu');openTitleChangeModal();">
+      ✏️ Master Title Change<br><span style="font-weight:400;font-size:0.78rem;color:var(--muted);">ஒரு தலைப்பை தேர்ந்தெடுத்து மாற்றினால், அதே தலைப்பில் உள்ள அனைத்து பிரதிகளும் (10 இருந்தாலும் 10-ம்) ஒரே நேரத்தில் புதுப்பிக்கப்படும்</span>
+    </button>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalMasterDataMenu')">✕ மூடு</button>
+  </div>
+</div>
+</div>
+
 <!-- ===== MASTER DATA RESTORE MODAL ===== -->
 <div class="modal-overlay" id="modalRestore" style="display:none;" onclick="if(event.target===this)closeModal('modalRestore')">
 <div class="modal" style="max-width:500px;">
-  <div class="modal-title">🗄️ Master Data Restore</div>
+  <div class="modal-title">♻️ Master Data Restore</div>
   <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">எந்த தேதிக்கான backup வேண்டும்?</label>
-  <select id="restoreSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;">
+  <select id="restoreSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
     <option>-- ஏற்றுகிறது --</option>
   </select>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Admin Password</label>
+  <input type="password" id="restorePwdInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="restoreMsg" style="margin-top:10px;font-size:0.85rem;"></div>
   <div class="modal-footer">
     <button class="btn btn-outline" onclick="closeModal('modalRestore')">✕ மூடு</button>
     <button class="btn btn-danger" onclick="restoreBackup()">♻️ மீட்டமைக்க</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== MASTER DATA CLEAR MODAL ===== -->
+<div class="modal-overlay" id="modalMasterClear" style="display:none;" onclick="if(event.target===this)closeModal('modalMasterClear')">
+<div class="modal" style="max-width:500px;">
+  <div class="modal-title">🗑️ Master Data Clear</div>
+  <p style="font-size:0.85rem;color:#c0392b;font-weight:600;margin-bottom:14px;">
+    ⚠️ இது கீழே தேர்ந்தெடுக்கும் ஆண்டின் தரவை மட்டும் முழுமையாக நீக்கிவிடும் — மற்ற ஆண்டுகளின் தரவு பாதிக்கப்படாது.
+    இதன் பின் அந்த ஆண்டுக்கு cmd prompt மூலம் மட்டுமே புதிய master_data ஏற்ற முடியும். இந்த செயலை திரும்பப் பெற முடியாது.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு (இதற்கு மட்டும் தரவு அழிக்கப்படும்)</label>
+  <select id="masterClearYearSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;"></select>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">உறுதி செய்ய <b>CLEAR</b> என தட்டச்சு செய்யவும்</label>
+  <input type="text" id="masterClearConfirmInput" placeholder="CLEAR" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Admin Password</label>
+  <input type="password" id="masterClearPwdInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="masterClearMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalMasterClear')">✕ மூடு</button>
+    <button class="btn btn-danger" onclick="doMasterDataClear()">🗑️ இந்த ஆண்டை அழி</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== MASTER ASSIGNING DATA CLEAR MODAL ===== -->
+<div class="modal-overlay" id="modalAssignClear" style="display:none;" onclick="if(event.target===this)closeModal('modalAssignClear')">
+<div class="modal" style="max-width:500px;">
+  <div class="modal-title">🔄 Master Assigning Data Clear</div>
+  <p style="font-size:0.85rem;color:#c0392b;font-weight:600;margin-bottom:14px;">
+    ⚠️ தேர்ந்தெடுத்த ஆண்டுக்கு இதுவரை 'பிரிக்க' + 'அனுப்பு' செய்யப்பட்ட அனைத்தும் நீக்கப்பட்டு, புத்தகங்கள் மீண்டும்
+    'பிரிக்க' நிலைக்கு வரும். ஏற்கனவே வழங்கப்பட்ட Central/Branch Number-கள் reclaim pool-க்குச் செல்லாது —
+    அந்த ஆண்டின் pool முழுவதும் காலி செய்யப்பட்டு, அடுத்த பிரிப்பு 1-ல் இருந்தே புதிதாக தொடங்கும்.
+    ("தவறான பதிவு நீக்கம்" செயல்முறை இதனால் பாதிக்கப்படாது.)
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு</label>
+  <select id="assignClearYearSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;"></select>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Admin Password</label>
+  <input type="password" id="assignClearPwdInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="assignClearMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalAssignClear')">✕ மூடு</button>
+    <button class="btn btn-danger" onclick="doAssignDataClear()">🔄 அழித்து புதிதாக தொடங்கு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== MASTER PUBLISHER CLEAR MODAL ===== -->
+<div class="modal-overlay" id="modalPublisherClear" style="display:none;" onclick="if(event.target===this)closeModal('modalPublisherClear')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">🏢 Master Publisher Clear</div>
+  <p style="font-size:0.85rem;color:#c0392b;font-weight:600;margin-bottom:14px;">
+    ⚠️ தேர்ந்தெடுக்கும் பதிப்பகத்திற்கு, தேர்ந்தெடுக்கும் ஆண்டில் உள்ள அனைத்து புத்தகங்களும் நிரந்தரமாக நீக்கப்படும்.
+    ஏற்கனவே பிரிக்க/அனுப்ப ஆன புத்தகங்கள் இருந்தால், அவற்றுக்கு கொடுக்கப்பட்ட Central/Branch Number-கள் மீண்டும்
+    பயன்படுத்தப்படாது. இந்த செயலை திரும்பப் பெற முடியாது.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு</label>
+  <select id="pubClearYearSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;" onchange="onPubClearYearChange()"></select>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பதிப்பகம் பெயர்</label>
+  <input type="text" id="pubClearSearchInput" placeholder="குறைந்தது 4 எழுத்துகள்..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:8px;" oninput="onPubClearSearchInput()">
+  <div id="pubClearSearchStatus" style="font-size:0.82rem;color:var(--muted);margin-bottom:6px;"></div>
+  <div id="pubClearSearchResults" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;display:none;margin-bottom:8px;"></div>
+
+  <div id="pubClearCountBox" style="display:none;margin-top:6px;margin-bottom:14px;background:#fff5f5;border:1px solid #c0392b;border-radius:8px;padding:12px;font-size:0.9rem;font-weight:600;color:#c0392b;"></div>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Admin Password</label>
+  <input type="password" id="pubClearPwdInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="pubClearMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalPublisherClear')">✕ மூடு</button>
+    <button class="btn btn-danger" id="pubClearDeleteBtn" onclick="doMasterPublisherClear()" disabled>🗑️ மொத்த புத்தகங்களையும் நீக்கு</button>
+  </div>
+</div>
+</div>
+
+<!-- ===== MASTER TITLE CHANGE MODAL ===== -->
+<div class="modal-overlay" id="modalTitleChange" style="display:none;" onclick="if(event.target===this)closeModal('modalTitleChange')">
+<div class="modal" style="max-width:520px;">
+  <div class="modal-title">✏️ Master Title Change</div>
+  <p style="font-size:0.85rem;color:#6b7280;margin-bottom:14px;">
+    ஒரு தலைப்பைத் தேர்ந்தெடுத்து புதிய தலைப்பு கொடுத்தால், தேர்ந்தெடுத்த ஆண்டில் அந்த
+    <b>exact அதே தலைப்பில்</b> உள்ள அனைத்து பிரதிகளும் (10 பிரதிகள் இருந்தாலும் 10-ம்)
+    ஒரே நேரத்தில் புதிய தலைப்புக்கு மாறும்.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">ஆண்டு</label>
+  <select id="titleChangeYearSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;" onchange="onTitleChangeYearChange()"></select>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">தற்போதைய தலைப்பு (தேட)</label>
+  <input type="text" id="titleChangeSearchInput" placeholder="குறைந்தது 4 எழுத்துகள்..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:8px;" oninput="onTitleChangeSearchInput()">
+  <div id="titleChangeSearchStatus" style="font-size:0.82rem;color:var(--muted);margin-bottom:6px;"></div>
+  <div id="titleChangeSearchResults" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;display:none;margin-bottom:8px;"></div>
+
+  <div id="titleChangeVendorWrap" style="display:none;margin-bottom:14px;">
+    <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பதிப்பகம் (இந்த தலைப்பை கொடுத்தவை)</label>
+    <select id="titleChangeVendorSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;" onchange="onTitleChangeVendorSelected()"></select>
+    <div style="font-size:0.78rem;color:var(--muted);margin-top:4px;">⚠️ ஒரே தலைப்பை வெவ்வேறு பதிப்பகங்கள் கொடுத்திருந்தால், இங்கு தேர்ந்தெடுக்கும் பதிப்பகத்தில் மட்டுமே மாற்றம் நடக்கும்.</div>
+  </div>
+
+  <div id="titleChangeCountBox" style="display:none;margin-top:6px;margin-bottom:14px;background:#f5f3ff;border:1px solid #6d28d9;border-radius:8px;padding:12px;font-size:0.9rem;font-weight:600;color:#6d28d9;"></div>
+
+  <div id="titleChangeBookIdWrap" style="display:none;margin-bottom:14px;">
+    <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Book Id</label>
+    <input type="text" id="titleChangeBookIdInput" readonly disabled style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;background:#f3f4f6;color:#374151;font-weight:600;">
+    <select id="titleChangeBookIdSelect" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;display:none;" onchange="onTitleChangeBookIdSelected()"></select>
+    <div id="titleChangeBookIdHint" style="font-size:0.78rem;color:var(--muted);margin-top:4px;display:none;">⚠️ இந்த தலைப்பில் (இந்த பதிப்பகத்தில்) ஒன்றுக்கும் மேற்பட்ட Book Id உள்ளது. எந்த Book Id-க்கு தலைப்பு மாற்ற வேண்டுமோ அதை மட்டும் தேர்ந்தெடுக்கவும் — மற்ற Book Id-யின் பிரதிகள் பாதிக்கப்படாது.</div>
+  </div>
+
+  <div id="titleChangeNewTitleWrap" style="display:none;">
+    <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">புதிய தலைப்பு (editable)</label>
+    <input type="text" id="titleChangeNewTitleInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;">
+  </div>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Admin Password</label>
+  <input type="password" id="titleChangePwdInput" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;">
+  <div id="titleChangeMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalTitleChange')">✕ மூடு</button>
+    <button class="btn btn-danger" id="titleChangeSaveBtn" onclick="doMasterTitleChange()" disabled>💾 அனைத்து பிரதிகளையும் புதுப்பி</button>
   </div>
 </div>
 </div>
@@ -810,6 +1043,8 @@
   <input type="text" id="renameIsbnCurrentTitle" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
   <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">பதிப்பகம்</label>
   <input type="text" id="renameIsbnVendor" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">எழுதியவர்</label>
+  <input type="text" id="renameIsbnAuthor" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
   <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Published Price (பதிப்பு விலை)</label>
   <input type="text" id="renameIsbnPrice" readonly style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:14px;background:#f3f4f6;">
   <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">புதிய தலைப்பு (விருப்பம்)</label>
@@ -877,6 +1112,70 @@
   <div class="modal-footer">
     <button class="btn btn-outline" onclick="closeModal('modalUploadExcel')">✕ மூடு</button>
     <button class="btn btn-success" onclick="doUploadExcel()">📤 அப்லோட் செய்</button>
+  </div>
+</div>
+</div>
+
+<!-- மாநிலப் பதிவெண் Bulk Update (Admin மட்டும்) -->
+<div class="modal-overlay" id="modalUploadStateAcc" style="display:none;" onclick="if(event.target===this)closeModal('modalUploadStateAcc')">
+<div class="modal" style="max-width:460px;">
+  <div class="modal-title">🏷️ மாநிலப் பதிவெண் புதுப்பி (Bulk Update)</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:14px;">
+    முதலில் "📥 Excel பதிவிறக்கம் → 4️⃣ மாநிலப் பதிவெண் Template" மூலம் கோப்பை பதிவிறக்கம் செய்யவும்.
+    அதில் "STATE ACCESSION NUMBER" column-ஐ மட்டும் நிரப்பி (ID column-ஐ தொடாமல்) இங்கே அப்லோட் செய்யவும்.
+    ID வைத்து புதுப்பிக்கப்படும் — புதிய rows சேர்க்கப்படாது, duplicate வராது.
+  </p>
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">Excel கோப்பு (.xlsx)</label>
+  <input type="file" id="uploadStateAccFile" accept=".xlsx,.xls" style="width:100%;margin-bottom:14px;">
+  <div id="uploadStateAccMsg" style="margin-top:10px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalUploadStateAcc')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="doUploadStateAcc()">📤 புதுப்பி</button>
+  </div>
+</div>
+</div>
+
+<!-- புத்தக முகப்பு அப்லோட் (Admin மட்டும்) -->
+<div class="modal-overlay" id="modalBookCoverUpload" style="display:none;" onclick="if(event.target===this)closeModal('modalBookCoverUpload')">
+<div class="modal" style="max-width:480px;">
+  <div class="modal-title">🖼️ புத்தக முகப்பு அப்லோட்</div>
+  <p style="font-size:0.85rem;color:var(--muted);margin-bottom:12px;">
+    கீழே இரண்டு வழிகளில் ஏதேனும் ஒன்றில் Book Id-ஐ தேர்ந்தெடுக்கவும்.
+  </p>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">
+    1️⃣ Book Id / தலைப்பு தேடி தேர்வு செய்யவும் (எந்த புத்தகமும்)
+  </label>
+  <input type="text" id="bookCoverSearchInput" placeholder="Book Id அல்லது தலைப்பு தட்டச்சு செய்யவும்..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:6px;" oninput="onBookCoverSearchInput()">
+  <div id="bookCoverSearchStatus" style="font-size:0.8rem;color:var(--muted);margin-bottom:6px;"></div>
+  <div id="bookCoverSearchResults" style="max-height:160px;overflow-y:auto;margin-bottom:14px;"></div>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">
+    2️⃣ அல்லது — "ஒரே தலைப்பில் வேறு விலை" பட்டியலில் இருந்து விரைவாக தேர்ந்தெடுக்கவும்
+  </label>
+  <select id="bookCoverBookIdSelect" onchange="onBookCoverBookIdChange()" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:14px;">
+    <option value="">-- Book Id தேர்ந்தெடுக்கவும் --</option>
+  </select>
+
+  <div id="bookCoverUploadTitle" style="font-size:0.85rem;background:#f0fdfa;border:1px solid #0d9488;border-radius:8px;padding:8px 12px;margin-bottom:14px;min-height:20px;display:none;"></div>
+
+  <label style="font-weight:600;color:var(--muted);font-size:0.85rem;display:block;margin-bottom:6px;">முகப்புப் படம் (jpg / jpeg / jfif)</label>
+  <input type="file" id="bookCoverUploadFile" accept=".jpg,.jpeg,.jfif,image/jpeg" style="width:100%;margin-bottom:14px;">
+  <div id="bookCoverUploadMsg" style="margin-top:6px;font-size:0.85rem;"></div>
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalBookCoverUpload')">✕ மூடு</button>
+    <button class="btn btn-success" onclick="doUploadBookCover()">📤 அப்லோட் செய்</button>
+  </div>
+</div>
+</div>
+
+<!-- புத்தக முகப்பு பார்வை (எல்லோருக்கும்) -->
+<div class="modal-overlay" id="modalBookCoverView" style="display:none;" onclick="if(event.target===this)closeModal('modalBookCoverView')">
+<div class="modal" style="max-width:420px;text-align:center;">
+  <div class="modal-title" id="bookCoverViewTitle">புத்தக முகப்பு</div>
+  <img id="bookCoverViewImg" src="" alt="புத்தக முகப்பு" style="max-width:100%;max-height:60vh;border-radius:8px;border:1px solid var(--border);margin:10px 0;">
+  <div class="modal-footer">
+    <button class="btn btn-outline" onclick="closeModal('modalBookCoverView')">✕ மூடு</button>
   </div>
 </div>
 </div>

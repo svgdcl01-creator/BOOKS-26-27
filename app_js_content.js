@@ -3,36 +3,182 @@ let selectedRow = null;
 let currentBook = null;
 let currentLibs = [];
 let searchTimeout = null;
-let currentYear = null;   // 🔄 ஆண்டு மாற்று — assign/send/search/reports/renumber/reclaim எல்லாமே இதையே பயன்படுத்தும்
+let currentYear = null;   // 🔄 ஆண்டு — assign/send/search/reports/renumber/reclaim எல்லாமே இதையே பயன்படுத்தும்.
+                          // Admin மட்டும் மாற்ற முடியும் (selector Admin-க்கு மட்டுமே); dclstaff Admin வைத்த ஆண்டையே தானாக பின்பற்றும்.
+let workWageCenters = [];   // 🏷️ பிரிக்க/அனுப்ப-ல் உண்மையில் பயன்படுத்தப்படும் filter — [] = அனைத்தும்.
+                             // admin-க்கு எப்போதும் [] (admin எப்போதும் அனைத்தும் பார்ப்பார்); dclstaff-க்கு Admin configure செய்ததே இதில் வரும்.
+let adminConfigWageCenters = [];   // Admin-ன் selector panel-ல் தற்போது தேர்ந்தெடுக்கப்பட்டிருப்பவை (dclstaff-க்கான configuration — Admin-ன் சொந்த பார்வையை பாதிக்காது).
+const WAGE_CENTER_MAX = 3;
+
+// query string-க்குள் அனுப்ப — pipe/பிரிக்கப்பட்ட wage_center பட்டியல் (actual filter)
+function wageCenterQueryParam() {
+  return workWageCenters.join(',');
+}
+// UI-ல் காட்ட — Admin தேர்ந்தெடுத்திருப்பவை
+function wageCenterDisplayLabel() {
+  return adminConfigWageCenters.join(', ');
+}
 
 // Google Books API key — "ISBN → தலைப்பு தேடு" (Books API-க்கு மட்டும் restrict செய்யப்பட்டது) — 429 rate-limit தவிர்க்க
 const GOOGLE_BOOKS_API_KEY = 'AIzaSyBKAAXZJCC7JB8WBUszv9s2o8-fhC4qj90';
 
 // ==================== YEAR SELECTOR ====================
+// Admin-க்கு மட்டுமே selector காட்டப்படும் (dclstaff-க்கு இல்லை). Admin மாற்றும் ஆண்டையே
+// dclstaff தானாக (server-side setting வழியாக) பின்பற்றுவார்.
 async function initYearSelector() {
-  try {
-    const data = await fetch('/api/years/available').then(r => r.json());
-    const years = data.years || ['2024-2025'];
-    currentYear = data.default || years[0];
-    const sel = document.getElementById('yearSelect');
-    if (sel) {
-      sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
-      sel.value = currentYear;
-    }
-  } catch (e) { currentYear = currentYear || '2024-2025'; }
+  if (window.CURRENT_ROLE === 'admin') {
+    try {
+      const data = await fetch('/api/years/available').then(r => r.json());
+      const years = data.years || ['2024-2025'];
+      let active = data.default || years[0];
+      try {
+        const sv = await fetch('/api/years/staff_view').then(r => r.json());
+        if (sv && sv.active_year && years.includes(sv.active_year)) active = sv.active_year;
+      } catch (e) { /* setting இல்லாவிட்டாலும் தொடரலாம் */ }
+      currentYear = active;
+      const sel = document.getElementById('yearSelect');
+      if (sel) {
+        sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+        sel.value = currentYear;
+      }
+    } catch (e) { currentYear = currentYear || '2024-2025'; }
+  } else {
+    try {
+      const sv = await fetch('/api/years/staff_view').then(r => r.json());
+      currentYear = (sv && sv.active_year) || '2024-2025';
+    } catch (e) { currentYear = currentYear || '2024-2025'; }
+  }
 }
 
 function onYearChange(val) {
   currentYear = val;
-  toast('📅 ஆண்டு: ' + currentYear + ' — தரவு புதுப்பிக்கப்படுகிறது', 'success');
+  toast('📅 ஆண்டு: ' + currentYear + ' — dcl staff-க்கும் இதே ஆண்டு அமையும்', 'success');
   updateLiveTicker();
   loadMultiPriceBanner();
   loadMultiIsbnBanner();
   window._fuzzyDone = false;
+  initWageCenterSelector();   // ஆண்டு மாறினால், அந்த ஆண்டுக்குண்டான ஊதிய மையங்களே காட்டப்பட வேண்டும்
   if (document.getElementById('page-send').classList.contains('active')) loadSendSets();
   if (document.getElementById('page-reclaim').classList.contains('active')) loadReclaimPoolStatus();
   if (document.getElementById('page-kavani') && document.getElementById('page-kavani').classList.contains('active')) loadKavaniPage();
+  // Admin இந்த ஆண்டையே dclstaff-க்கும் active ஆக்கும் (server-side setting)
+  if (window.CURRENT_ROLE === 'admin') {
+    fetch('/api/years/staff_view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year: val })
+    }).catch(() => {});
+  }
 }
+
+// ==================== WAGE CENTER (ஊதிய மையம்) SELECTOR — Admin மட்டும் ====================
+// அதிகபட்சம் 3 ஊதிய மையங்கள் வரை Admin தேர்ந்தெடுக்கலாம் (checkbox panel). இந்த selector
+// Admin-க்கு மட்டுமே காட்டப்படும். Admin-ன் சொந்த பார்வையை இது பாதிக்காது — Admin எப்போதும்
+// அனைத்து ஊதிய மையங்களையும் பார்ப்பார். இந்த தேர்வு dclstaff வேலை செய்யும் ஊதிய மைய(ங்க)ளாக
+// server-side setting வழியாக சேமிக்கப்பட்டு, dclstaff தானாக பின்பற்றுவார்கள் (அவர்களுக்கு
+// எந்த selector-ம் காட்டப்படாது).
+let _wageCenterAvailable = [];
+
+async function initWageCenterSelector() {
+  if (window.CURRENT_ROLE === 'admin') {
+    const btn = document.getElementById('wageCenterBtn');
+    if (!btn) return;
+    try {
+      const [centers, activeRes] = await Promise.all([
+        fetch('/api/wage_centers/available?year=' + encodeURIComponent(currentYear)).then(r => r.json()),
+        fetch('/api/wage_centers/active').then(r => r.json())
+      ]);
+      _wageCenterAvailable = centers;
+      adminConfigWageCenters = (activeRes.active_wage_centers || []).filter(c => centers.includes(c));
+      renderWageCenterCheckboxes();
+      updateWageCenterButtonLabel();
+    } catch (e) {
+      _wageCenterAvailable = [];
+      adminConfigWageCenters = [];
+      updateWageCenterButtonLabel();
+    }
+    workWageCenters = [];   // Admin எப்போதும் அனைத்து ஊதிய மையங்களையும் பார்ப்பார்
+  } else {
+    // dclstaff — Admin configure செய்ததையே தானாக பின்பற்றும், UI இல்லை
+    try {
+      const activeRes = await fetch('/api/wage_centers/active').then(r => r.json());
+      workWageCenters = activeRes.active_wage_centers || [];
+    } catch (e) { workWageCenters = []; }
+  }
+}
+
+function renderWageCenterCheckboxes() {
+  const list = document.getElementById('wageCenterCheckboxList');
+  if (!list) return;
+  list.innerHTML = _wageCenterAvailable.map((c, idx) => `
+    <div class="checkbox-item${adminConfigWageCenters.includes(c) ? ' checked' : ''}" style="padding:8px 10px;margin-bottom:6px;color:#1e293b;" onclick="toggleWageCenterCheckbox('${escAttr(c)}')">
+      <input type="checkbox" id="wc_cb_${idx}" value="${escAttr(c)}" ${adminConfigWageCenters.includes(c) ? 'checked' : ''} onclick="event.stopPropagation(); toggleWageCenterCheckbox('${escAttr(c)}')">
+      <label style="color:#1e293b;">${escHtml(c)}</label>
+    </div>`).join('') || '<div style="padding:8px;color:var(--muted);font-size:0.85rem;">ஊதிய மையங்கள் இல்லை</div>';
+}
+
+function toggleWageCenterCheckbox(val) {
+  const idx = adminConfigWageCenters.indexOf(val);
+  if (idx >= 0) {
+    adminConfigWageCenters.splice(idx, 1);
+  } else {
+    if (adminConfigWageCenters.length >= WAGE_CENTER_MAX) {
+      toast(`⚠️ அதிகபட்சம் ${WAGE_CENTER_MAX} ஊதிய மையங்கள் மட்டுமே தேர்வு செய்ய முடியும்`, 'error');
+      return;
+    }
+    adminConfigWageCenters.push(val);
+  }
+  renderWageCenterCheckboxes();
+  updateWageCenterButtonLabel();
+  saveWageCenterConfig();
+}
+
+function clearWageCenterSelection() {
+  adminConfigWageCenters = [];
+  renderWageCenterCheckboxes();
+  updateWageCenterButtonLabel();
+  saveWageCenterConfig();
+}
+
+async function saveWageCenterConfig() {
+  try {
+    await fetch('/api/wage_centers/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wage_centers: adminConfigWageCenters })
+    });
+    toast(adminConfigWageCenters.length
+      ? ('🏷️ dcl staff இப்போது இவற்றில் மட்டும் வேலை செய்வார்: ' + wageCenterDisplayLabel())
+      : '🏷️ dcl staff அனைத்து ஊதிய மையங்களிலும் வேலை செய்வார்', 'success');
+  } catch (e) {
+    toast('❌ சேமிப்பில் பிழை', 'error');
+  }
+}
+
+function updateWageCenterButtonLabel() {
+  const btn = document.getElementById('wageCenterBtn');
+  if (!btn) return;
+  btn.textContent = adminConfigWageCenters.length
+    ? `${adminConfigWageCenters.length}/${WAGE_CENTER_MAX} தேர்வு: ${wageCenterDisplayLabel()}`
+    : '— அனைத்தும் —';
+}
+
+function toggleWageCenterPanel() {
+  const panel = document.getElementById('wageCenterPanel');
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'none' || !panel.style.display ? 'block' : 'none';
+}
+
+function closeWageCenterPanel() {
+  const panel = document.getElementById('wageCenterPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+// panel-க்கு வெளியே click செய்தால் மூடிவிடும்
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('wageCenterWrap');
+  if (wrap && !wrap.contains(e.target)) closeWageCenterPanel();
+});
 
 // ==================== PAGE SWITCH ====================
 function showPage(id, btn) {
@@ -96,7 +242,7 @@ async function loadMultiPriceBanner() {
     const list = document.getElementById('multiPriceList');
     if (!items || !items.length) { banner.style.display = 'none'; return; }
     banner.style.display = 'block';
-    list.innerHTML = items.slice(0, 20).map(item =>
+    list.innerHTML = items.map(item =>
       `<div class="alert-card" onclick="searchTitle('${escAttr(item.title)}')">
         <div class="alert-card-title">📖 ${escHtml(item.title)}</div>
         <div class="alert-card-prices">💰 ${item.prices.map(p => '₹' + p).join(' | ')}</div>
@@ -119,7 +265,7 @@ async function loadMultiIsbnBanner() {
     if (!banner || !list) return;
     if (!items || !items.length) { banner.style.display = 'none'; return; }
     banner.style.display = 'block';
-    list.innerHTML = items.slice(0, 20).map(item =>
+    list.innerHTML = items.map(item =>
       `<div class="alert-card" onclick="searchTitle('${escAttr(item.title)}')">
         <div class="alert-card-title">📖 ${escHtml(item.title)}</div>
         <div class="alert-card-prices">🏷️ ISBN: ${item.isbns.map(i => escHtml(String(i))).join(' | ')}</div>
@@ -236,17 +382,20 @@ async function openRenameIsbnModal(isbn, currentTitle) {
   document.getElementById('renameIsbnOld').value = isbn;
   document.getElementById('renameIsbnCurrentTitle').value = currentTitle;
   document.getElementById('renameIsbnVendor').value = '⏳ ஏற்றுகிறது...';
+  document.getElementById('renameIsbnAuthor').value = '⏳ ஏற்றுகிறது...';
   document.getElementById('renameIsbnPrice').value = '⏳ ஏற்றுகிறது...';
-  document.getElementById('renameIsbnNewTitle').value = '';
+  document.getElementById('renameIsbnNewTitle').value = currentTitle;
   document.getElementById('renameIsbnNewIsbn').value = '';
   document.getElementById('renameIsbnMsg').textContent = '';
   document.getElementById('modalRenameIsbn').style.display = 'flex';
   try {
     const info = await fetch('/api/isbn_info?isbn=' + encodeURIComponent(isbn) + '&year=' + encodeURIComponent(currentYear)).then(r => r.json());
     document.getElementById('renameIsbnVendor').value = info.vendor_name || '—';
+    document.getElementById('renameIsbnAuthor').value = info.author || '—';
     document.getElementById('renameIsbnPrice').value = info.price || '—';
   } catch(e) {
     document.getElementById('renameIsbnVendor').value = '—';
+    document.getElementById('renameIsbnAuthor').value = '—';
     document.getElementById('renameIsbnPrice').value = '—';
   }
 }
@@ -426,8 +575,8 @@ async function pollFuzzy() {
     const COLORS = ['fuzzy-card-0','fuzzy-card-1','fuzzy-card-2','fuzzy-card-3','fuzzy-card-4','fuzzy-card-5','fuzzy-card-6','fuzzy-card-7'];
     list.innerHTML = clusters.map((c, i) =>
       `<div class="alert-card ${COLORS[i % COLORS.length]}" style="border-width:2px;margin-bottom:10px;">
-        <div class="alert-card-title" style="font-size:0.95rem;">🔀 ${i+1}. ${escHtml(c.canonical)}</div>
-        ${c.variants.slice(1).map(v => `<div class="fuzzy-variant" style="padding:3px 0;">• ${escHtml(v)}</div>`).join('')}
+        <div class="alert-card-title" style="font-size:0.95rem;cursor:pointer;" onclick="askChangeFuzzyTitle('${escAttr(c.canonical)}')" title="இந்த தலைப்பை மாற்ற கிளிக் செய்யவும்">🔀 ${i+1}. ${escHtml(c.canonical)}</div>
+        ${c.variants.slice(1).map(v => `<div class="fuzzy-variant" style="padding:3px 0;cursor:pointer;" onclick="askChangeFuzzyTitle('${escAttr(v)}')" title="இந்த தலைப்பை மாற்ற கிளிக் செய்யவும்">• ${escHtml(v)}</div>`).join('')}
         <div class="alert-card-prices" style="margin-top:8px;">💰 ${c.allPrices.map(p => '₹' + p).join(' | ')} &nbsp;|&nbsp; 📚 ${c.count} புத்தகங்கள்</div>
       </div>`
     ).join('');
@@ -435,6 +584,15 @@ async function pollFuzzy() {
     document.getElementById('fuzzyProgressWrap').style.display = 'none';
     list.innerHTML = '<div style="color:red;padding:20px;">கண்டறிய இயலவில்லை: ' + e + '</div>';
   }
+}
+
+// கவனிக்க தாவலில் ஒரு தலைப்பைக் கிளிக் செய்தால் — மாற்ற விரும்புகிறீர்களா என்று கேட்டு,
+// "ஆம்" எனில் Master Title Change modal-ஐ அதே தலைப்புடன் திறந்து, அதே Master Title Change
+// முறையிலேயே (பதிப்பகம் தேர்வு -> புதிய தலைப்பு -> Admin Password) தலைப்பு மாறும்.
+function askChangeFuzzyTitle(title) {
+  const ok = confirm(`"${title}" — இந்த தலைப்பை மாற்ற விரும்புகிறீர்களா?`);
+  if (!ok) return;
+  openTitleChangeModal(title);
 }
 
 // ==================== SEARCH ====================
@@ -445,17 +603,26 @@ function onSearch() {
 
 async function doSearch() {
   const q = document.getElementById('searchInput').value.trim();
-  if (q.length < 2) {
-    document.getElementById('resultsBody').innerHTML = '<tr><td colspan="5"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>';
+  if (q.length < 1) {
+    document.getElementById('resultsBody').innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="icon">📖</div><div>தேட ஆரம்பிக்கவும்...</div></div></td></tr>';
     document.getElementById('searchStatus').textContent = '';
     selectedRow = null;
     return;
   }
   document.getElementById('searchStatus').innerHTML = '<span class="loading"><span class="spinner"></span> தேடுகிறது...</span>';
-  const data = await fetch('/api/search?q=' + encodeURIComponent(q) + '&year=' + encodeURIComponent(currentYear)).then(r=>r.json());
+  let data;
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&year=' + encodeURIComponent(currentYear));
+    if (!res.ok) throw new Error('Server பிழை (' + res.status + ')');
+    data = await res.json();
+  } catch (e) {
+    document.getElementById('resultsBody').innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="icon">⚠️</div><div>தேடலில் பிழை — மீண்டும் முயற்சிக்கவும்</div></div></td></tr>';
+    document.getElementById('searchStatus').textContent = '';
+    return;
+  }
   const tbody = document.getElementById('resultsBody');
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><div class="icon">🔍</div><div>முடிவுகள் இல்லை</div></div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="icon">🔍</div><div>முடிவுகள் இல்லை</div></div></td></tr>';
     document.getElementById('searchStatus').textContent = '';
     return;
   }
@@ -466,10 +633,36 @@ async function doSearch() {
     const badge = r.isMultiPrice
       ? '<span class="multi-price-badge">🔴 வேறு விலை!</span>'
       : (r.isFuzzyDup ? '<span class="fuzzy-dup-badge">🟠 ஒத்த தலைப்பு!</span>' : '');
+    // முகப்புப் படம் column — "ஒரே தலைப்பில் வேறு விலை" புத்தகங்களுக்கு மட்டுமல்ல,
+    // Book Id உள்ள எந்த புத்தகத்திற்கும் (Book Id/தலைப்பு தேடி அப்லோட் செய்தவைக்கும்) காட்டப்படும்.
+    const isAdminUser = (window.CURRENT_ROLE === 'admin');
+    let coverCell = '';
+    if (r.bookId) {
+      const viewBtn = r.hasCover
+        ? `<button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation();viewBookCover('${escAttr(r.bookId)}','${escAttr(r.title)}')">🖼️ பார்க்க</button>`
+        : '';
+      // "மாற்று" (ஏற்கனவே cover உள்ள புத்தகத்தை மாற்றும் பட்டன்) இனி காட்டப்படாது —
+      // cover இல்லாத புத்தகங்களுக்கு மட்டும் "ஏற்று" பட்டன் காட்டப்படும்.
+      let uploadBtn = '';
+      if (r.hasCover) {
+        uploadBtn = '';
+      } else if (isAdminUser) {
+        uploadBtn = `<button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation();openBookCoverUploadModalFor('${escAttr(r.bookId)}','${escAttr(r.title)}','${escAttr(r.vendor)}','${escAttr(r.price)}',false)">➕ ஏற்று</button>`;
+      } else {
+        uploadBtn = `<span style="color:var(--muted);font-size:0.8rem;">படம் இல்லை</span>`;
+      }
+      coverCell = `<div style="display:flex;gap:6px;flex-wrap:wrap;">${viewBtn}${uploadBtn}</div>`;
+    } else if (r.isMultiPrice) {
+      coverCell = `<span style="color:var(--muted);font-size:0.8rem;">Book Id இல்லை</span>`;
+    } else {
+      coverCell = '—';
+    }
     return `<tr class="${rowClass}" onclick="selectRow(this,'${escAttr(r.title)}','${escAttr(r.price)}')" data-title="${escAttr(r.title)}" data-price="${escAttr(r.price)}">
       <td data-label="#">${i+1}</td>
-      <td data-label="தலைப்பு" style="font-weight:500;">${escHtml(r.title)}${badge}</td>
-      <td data-label="பதிப்பகம்">${escHtml(r.vendor)}</td>
+      <td data-label="தலைப்பு" style="font-weight:500;white-space:normal;word-break:break-word;">${escHtml(r.title)}${badge}</td>
+      <td data-label="எழுதியவர்" style="white-space:normal;word-break:break-word;font-size:0.85rem;">${r.author ? escHtml(r.author) : '—'}</td>
+      <td data-label="புத்தக முகப்பு">${coverCell}</td>
+      <td data-label="பதிப்பகம்" style="max-width:110px;white-space:normal;word-break:break-word;font-size:0.85rem;">${escHtml(r.vendor)}</td>
       <td data-label="விலை">₹${escHtml(r.price)}</td>
       <td data-label="எண்ணிக்கை"><span class="badge badge-teal">${r.count}</span></td>
     </tr>`;
@@ -507,6 +700,9 @@ async function openBookDetail() {
   document.getElementById('confirmLabel').textContent = `மீதமுள்ள ${d.remaining} புத்தகங்கள் என்பதை உறுதிப்படுத்துகிறேன்`;
   document.getElementById('confirmCheck').checked = false;
   document.getElementById('proceedBtn').disabled = true;
+  document.getElementById('proceedBtn').textContent = workWageCenters.length
+    ? `🏷️ நூலகங்கள் (${workWageCenters.join(', ')}) →`
+    : '🏷️ நூலக வகை தேர்வு →';
   document.getElementById('modalDetail').style.display = 'flex';
 }
 
@@ -522,12 +718,36 @@ function updateProceedBtn() {
 // ==================== LIB TYPE ====================
 async function openLibTypeModal() {
   closeModal('modalDetail');
+  // ஊதிய மையம் தேர்ந்தெடுக்கப்பட்டிருந்தால் — நூலக வகை படி என்று படி இல்லாமல்
+  // நேரடியாக அந்த ஊதிய மையத்திற்குண்டான அனைத்து நூலகங்களையும் காட்டு
+  if (workWageCenters.length) {
+    await openLibrariesModalForWageCenter();
+    return;
+  }
   const sel = document.getElementById('libTypeSelect');
   sel.innerHTML = currentBook.lib_types.map(t => `<option value="${escAttr(t)}">${escHtml(t)}</option>`).join('');
   document.getElementById('modalLibType').style.display = 'flex';
 }
 
-// ==================== LIBRARIES ====================
+// ==================== LIBRARIES (ஊதிய மையம் வழி — வகை தேர்வு இல்லாமல்) ====================
+async function openLibrariesModalForWageCenter() {
+  const libs = await fetch(`/api/libraries_for_wage_center?title=${encodeURIComponent(currentBook.title)}&price=${encodeURIComponent(currentBook.price)}&wage_center=${encodeURIComponent(wageCenterQueryParam())}&year=${encodeURIComponent(currentYear)}`).then(r=>r.json());
+  if (!libs.length) { toast('இந்த ஊதிய மைய(ங்க)ளில் நூலகங்கள் இல்லை', 'error'); return; }
+  currentBook.selectedLibType = null;   // பல வகைகள் கலந்திருக்கலாம் — assign-ல் library_type கட்டுப்பாடு தேவையில்லை
+  currentLibs = libs;
+  document.getElementById('libTypeInfo').textContent = `ஊதிய மையம்: ${workWageCenters.join(', ')}  |  தலைப்பு: ${currentBook.title.substring(0,60)}`;
+  const grid = document.getElementById('libsCheckboxGrid');
+  grid.innerHTML = libs.map((lib, idx) => `
+    <div class="checkbox-item" onclick="toggleCheckbox('asgn_cb_${idx}',this)">
+      <input type="checkbox" id="asgn_cb_${idx}" value="${escAttr(lib)}" onchange="updateAssignCount()">
+      <label for="asgn_cb_${idx}">${escHtml(lib)}</label>
+    </div>`).join('');
+  document.getElementById('assignSelectAll').checked = false;
+  updateAssignCount();
+  document.getElementById('modalLibraries').style.display = 'flex';
+}
+
+// ==================== LIBRARIES (நூலக வகை வழி — பழைய நடத்தை) ====================
 async function openLibrariesModal() {
   const libType = document.getElementById('libTypeSelect').value;
   closeModal('modalLibType');
@@ -641,7 +861,7 @@ async function loadSendSets() {
   sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
   document.getElementById('sendLibsSection').style.display = 'none';
   document.getElementById('sendInfo').style.display = 'none';
-  const data = await fetch('/api/send/sets?year=' + encodeURIComponent(currentYear)).then(r=>r.json());
+  const data = await fetch('/api/send/sets?year=' + encodeURIComponent(currentYear) + '&wage_center=' + encodeURIComponent(wageCenterQueryParam())).then(r=>r.json());
   if (!data.length) { sel.innerHTML = '<option>-- அனுப்ப வேண்டியவை இல்லை --</option>'; return; }
   sel.innerHTML = data.map(d => `<option value="${escAttr(d.set)}">${escHtml(d.set)}  (${d.count} புத்தகங்கள்)</option>`).join('');
 }
@@ -650,7 +870,7 @@ async function loadSendLibraries() {
   const val = document.getElementById('sendSetSelect').value;
   if (!val || val.includes('இல்லை') || val.includes('ஏற்று')) { toast('SET NUMBER தேர்வு செய்யவும்!', 'error'); return; }
   const setNum = val.split('  (')[0].trim();
-  const data = await fetch(`/api/send/libraries?set=${encodeURIComponent(setNum)}&year=${encodeURIComponent(currentYear)}`).then(r=>r.json());
+  const data = await fetch(`/api/send/libraries?set=${encodeURIComponent(setNum)}&year=${encodeURIComponent(currentYear)}&wage_center=${encodeURIComponent(wageCenterQueryParam())}`).then(r=>r.json());
   const infoEl = document.getElementById('sendInfo');
   if (!data.libraries.length) { infoEl.textContent = `'${setNum}' — அனுப்ப வேண்டிய நூலகங்கள் இல்லை.`; infoEl.style.display='block'; document.getElementById('sendLibsSection').style.display='none'; return; }
   infoEl.textContent = `SET: ${setNum}  |  மொத்தம் ${data.total} புத்தகங்கள்  |  ${data.libraries.length} நூலகங்கள்`;
@@ -709,9 +929,11 @@ async function markSent() {
 }
 
 // ==================== REPORTS ====================
-async function genReport(num) {
+async function genReport(num, rtype) {
   showLoading(`⏳ அறிக்கை ${num} உருவாக்குகிறது...`);
-  const res = await fetch('/api/report/' + num + '?year=' + encodeURIComponent(currentYear)).then(r=>r.json());
+  let url = '/api/report/' + num + '?year=' + encodeURIComponent(currentYear);
+  if (rtype) url += '&rtype=' + encodeURIComponent(rtype);
+  const res = await fetch(url).then(r=>r.json());
   hideLoading();
   if (res.success) {
     toast('✅ ' + res.message, 'success');
@@ -720,18 +942,91 @@ async function genReport(num) {
   else toast('❌ ' + (res.error || 'பிழை'), 'error');
 }
 
+// ---- அறிக்கை 4: வகை தேர்வு modal ----
+function openReport4TypeModal() {
+  document.getElementById('modalReport4Type').style.display = 'flex';
+}
+function chooseReport4Type(rtype) {
+  closeModal('modalReport4Type');
+  openReportChoice({ kind: 'get', num: 4, rtype: rtype });
+}
+
+// ---- அறிக்கை 1,2,3,4,5,7 அனைத்திற்கும் பொதுவான PDF/Excel தேர்வு modal ----
+function openReportChoice(pending) {
+  window._pendingReport = pending;
+  document.getElementById('modalReportChoice').style.display = 'flex';
+}
+
+async function chooseReportView() {
+  closeModal('modalReportChoice');
+  const p = window._pendingReport;
+  if (!p) return;
+  if (p.kind === 'get') await genReport(p.num, p.rtype);
+  else if (p.kind === 'post5') await genReport5Do(p.payload);
+  else if (p.kind === 'post7') await genReport7Do(p.payload);
+}
+
+async function chooseReportExcelDownload() {
+  closeModal('modalReportChoice');
+  const p = window._pendingReport;
+  if (!p) return;
+  showLoading('⏳ Excel தயார் செய்யப்படுகிறது...');
+  try {
+    let url, opts = {};
+    if (p.kind === 'get') {
+      url = '/api/report/' + p.num + '/excel?year=' + encodeURIComponent(currentYear);
+      if (p.rtype) url += '&rtype=' + encodeURIComponent(p.rtype);
+    } else if (p.kind === 'post5') {
+      url = '/api/report5/excel';
+      opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p.payload) };
+    } else if (p.kind === 'post7') {
+      url = '/api/report7/excel';
+      opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p.payload) };
+    } else { hideLoading(); return; }
+
+    const res = await fetch(url, opts);
+    const ct = res.headers.get('Content-Type') || '';
+    if (ct.includes('application/json')) {
+      const err = await res.json();
+      hideLoading();
+      toast('❌ ' + (err.error || 'பிழை'), 'error');
+      return;
+    }
+    const blob = await res.blob();
+    hideLoading();
+    let fname = 'அறிக்கை.xlsx';
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^\";]+)"?/i.exec(cd);
+    if (m) fname = decodeURIComponent(m[1]);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = fname;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast('✅ Excel பதிவிறக்கம் ஆனது', 'success');
+  } catch (e) {
+    hideLoading();
+    toast('❌ பிழை: ' + e, 'error');
+  }
+}
+
 async function loadR5Libs() {
   const sel = document.getElementById('r5LibSelect');
   const libs = await fetch('/api/report5_libs?year=' + encodeURIComponent(currentYear)).then(r=>r.json());
   sel.innerHTML = libs.map(l => `<option value="${escAttr(l)}">${escHtml(l)}</option>`).join('');
 }
 
-async function genReport5() {
+function genReport5() {
   const lib = document.getElementById('r5LibSelect').value;
   if (!lib || lib.includes('ஏற்று')) { toast('நூலகம் தேர்வு செய்யவும்!', 'error'); return; }
   if (!confirm(`நீங்கள் தேர்வு செய்த நூலகம்:\\n\\n🏛️  ${lib}\\n\\nஇதுதான் என்பதை உறுதிப்படுத்துகிறீர்களா?`)) return;
+  openReportChoice({ kind: 'post5', payload: { lib_name: lib, year: currentYear } });
+}
+
+async function genReport5Do(payload) {
   showLoading('⏳ அறிக்கை 5 உருவாக்குகிறது...');
-  const res = await fetch('/api/report5', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({lib_name:lib, year: currentYear}) }).then(r=>r.json());
+  const res = await fetch('/api/report5', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }).then(r=>r.json());
   hideLoading();
   if (res.success) {
     toast('✅ ' + res.message, 'success');
@@ -769,7 +1064,7 @@ async function loadR7Ranges() {
 function r7ToggleAll(cb) {
   document.querySelectorAll('#r7Items input[type=checkbox]').forEach(c => c.checked = cb.checked);
 }
-async function genReport7() {
+function genReport7() {
   const checked = [...document.querySelectorAll('#r7Items input[type=checkbox]:checked')];
   if (checked.length === 0) { toast('⚠️ குறைந்தது ஒரு பகுதியாவது தேர்வு செய்யவும்', 'error'); return; }
   const selected = checked.map(c => {
@@ -777,11 +1072,15 @@ async function genReport7() {
     const r = _r7Ranges.find(x => x.idx === idx);
     return {idx: r.idx, start: r.start, end: r.end};
   });
-  showLoading(`⏳ அறிக்கை 7 — ${selected.length} பகுதி(கள்) உருவாக்குகிறது...`);
+  openReportChoice({ kind: 'post7', payload: { selected, year: currentYear } });
+}
+
+async function genReport7Do(payload) {
+  showLoading(`⏳ அறிக்கை 7 — ${payload.selected.length} பகுதி(கள்) உருவாக்குகிறது...`);
   const res = await fetch('/api/report7', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({selected, year: currentYear})
+    body: JSON.stringify(payload)
   }).then(r=>r.json());
   hideLoading();
   if (res.success) {
@@ -840,13 +1139,26 @@ async function exitApp() {
 // ==================== INIT ====================
 window.onload = async () => {
   await initYearSelector();
+  await initWageCenterSelector();
 
   // Admin மட்டும் பார்க்க வேண்டிய பட்டன்கள் — staff-க்கு மறைக்கப்படும்
   if (window.CURRENT_ROLE !== 'admin') {
-    ['btnRenumber', 'btnRestore', 'btnReclaim', 'btnChangePwd', 'btnDownloadExcel', 'btnLibrarianYear', 'btnUploadExcel'].forEach(id => {
+    ['btnRenumber', 'btnRestore', 'btnReclaim', 'btnChangePwd', 'btnDownloadExcel', 'btnLibrarianYear', 'btnUploadExcel', 'btnUploadStateAcc', 'btnUploadBookCover'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
+  }
+
+  // ஆண்டு + ஊதிய மையம் selector-கள் — Admin-க்கு மட்டுமே காட்டப்படும்.
+  // dclstaff-க்கு இரண்டும் மறைக்கப்படும் — Admin தேர்ந்தெடுத்ததையே அவர்கள் தானாக பின்பற்றுவார்கள்.
+  const yearWrapEl = document.getElementById('yearWrap');
+  const wageCenterWrapEl = document.getElementById('wageCenterWrap');
+  if (window.CURRENT_ROLE === 'admin') {
+    if (yearWrapEl) yearWrapEl.style.display = 'flex';
+    if (wageCenterWrapEl) wageCenterWrapEl.style.display = 'flex';
+  } else {
+    if (yearWrapEl) yearWrapEl.style.display = 'none';
+    if (wageCenterWrapEl) wageCenterWrapEl.style.display = 'none';
   }
 
   // Set number options
@@ -881,50 +1193,68 @@ function chooseRenumberCentral() {
 }
 // ஒவ்வொரு நூலகத்திற்கும் admin type செய்யும் புதிய கிளைப்பதிவெண்-ஐ pageக்கு page தாண்டியும்
 // நினைவில் வைக்க இந்த state object பயன்படுகிறது: { "நூலகம் பெயர்": "20001", ... }
-const renumberBranchState = { page: 1, pageSize: 10, totalPages: 1, edits: {} };
+const renumberBranchState = { edits: {}, allLibraries: [] };
 
 function chooseRenumberBranch() {
   closeModal('modalRenumberChoice');
   renumberBranchState.edits = {};
   document.getElementById('modalRenumberBranch').style.display = 'flex';
-  renumberBranchGoPage(1);
+  const searchBox = document.getElementById('renumberBranchSearchInput');
+  if (searchBox) searchBox.value = '';
+  renumberBranchLoadAll();
 }
 
-async function renumberBranchGoPage(page) {
-  if (page < 1) page = 1;
-  if (page > renumberBranchState.totalPages) page = renumberBranchState.totalPages;
-  renumberBranchState.page = page;
-
+// 150 நூலகங்களும் ஒரே request-ல் load செய்யப்பட்டு, search box மூலம் உடனடியாக filter செய்யப்படும்
+// (இதனால் "அடுத்தது" என்பதை பல முறை கிளிக் செய்ய வேண்டிய தேவை இல்லை).
+async function renumberBranchLoadAll() {
   const tbody = document.getElementById('renumberBranchTableBody');
   tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted);">ஏற்றுகிறது...</td></tr>';
   try {
-    const res = await fetch('/api/renumber/branch/library_list?page=' + page + '&page_size=' + renumberBranchState.pageSize + '&year=' + encodeURIComponent(currentYear));
+    const res = await fetch('/api/renumber/branch/library_list?page=1&page_size=1000&year=' + encodeURIComponent(currentYear));
     const data = await res.json();
-    renumberBranchState.page = data.page;
-    renumberBranchState.totalPages = data.total_pages;
-    document.getElementById('renumberBranchPageLabel').textContent = 'பக்கம் ' + data.page + ' / ' + data.total_pages + ' (மொத்தம் ' + data.total + ' நூலகங்கள்)';
-
-    if (!data.libraries.length) {
-      tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted);">நூலகங்கள் இல்லை</td></tr>';
-      return;
-    }
-    tbody.innerHTML = data.libraries.map(lib => {
-      const safeName = lib.library_name.replace(/"/g, '&quot;');
-      const existingVal = renumberBranchState.edits[lib.library_name] || '';
-      return '<tr>' +
-        '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.serial + '</td>' +
-        '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.library_name + '</td>' +
-        '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.current_label + '</td>' +
-        '<td style="padding:8px;border-bottom:1px solid var(--border);">' +
-        '<input type="number" data-lib="' + safeName + '" value="' + existingVal + '" placeholder="புதிய எண்" ' +
-        'style="width:110px;padding:6px;border:1px solid var(--border);border-radius:6px;" ' +
-        'oninput="renumberBranchEditInput(this)">' +
-        '</td></tr>';
-    }).join('');
-    renumberBranchUpdateNote();
+    renumberBranchState.allLibraries = data.libraries;
+    renumberBranchRenderRows(renumberBranchState.allLibraries);
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted);">பிழை ஏற்பட்டது</td></tr>';
   }
+}
+
+function renumberBranchRenderRows(list) {
+  const tbody = document.getElementById('renumberBranchTableBody');
+  const label = document.getElementById('renumberBranchPageLabel');
+  if (label) {
+    label.textContent = 'மொத்தம் ' + renumberBranchState.allLibraries.length + ' நூலகங்கள்' +
+      (list.length !== renumberBranchState.allLibraries.length ? ' (' + list.length + ' தேடலில் கிடைத்தது)' : '');
+  }
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;text-align:center;color:var(--muted);">நூலகங்கள் இல்லை</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(lib => {
+    const safeName = lib.library_name.replace(/"/g, '&quot;');
+    const existingVal = renumberBranchState.edits[lib.library_name] || '';
+    return '<tr>' +
+      '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.serial + '</td>' +
+      '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.library_name + '</td>' +
+      '<td style="padding:8px;border-bottom:1px solid var(--border);">' + lib.current_label + '</td>' +
+      '<td style="padding:8px;border-bottom:1px solid var(--border);">' +
+      '<input type="number" data-lib="' + safeName + '" value="' + existingVal + '" placeholder="புதிய எண்" ' +
+      'style="width:110px;padding:6px;border:1px solid var(--border);border-radius:6px;" ' +
+      'oninput="renumberBranchEditInput(this)">' +
+      '</td></tr>';
+  }).join('');
+  renumberBranchUpdateNote();
+}
+
+function renumberBranchFilter() {
+  const box = document.getElementById('renumberBranchSearchInput');
+  const q = box ? box.value.trim() : '';
+  if (!q) {
+    renumberBranchRenderRows(renumberBranchState.allLibraries);
+    return;
+  }
+  const filtered = renumberBranchState.allLibraries.filter(lib => lib.library_name.indexOf(q) !== -1);
+  renumberBranchRenderRows(filtered);
 }
 
 function renumberBranchEditInput(input) {
@@ -1024,8 +1354,15 @@ async function saveBranchRenumberBulk() {
   }
 }
 
+// ==================== MASTER DATA — மெனு ====================
+function openMasterDataMenu() {
+  document.getElementById('modalMasterDataMenu').style.display = 'flex';
+}
+
 async function openRestoreModal() {
   document.getElementById('modalRestore').style.display = 'flex';
+  document.getElementById('restorePwdInput').value = '';
+  document.getElementById('restoreMsg').textContent = '';
   const sel = document.getElementById('restoreSelect');
   sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
   showLoading('⏳ Backup பட்டியல் ஏற்றுகிறது...');
@@ -1044,24 +1381,529 @@ async function openRestoreModal() {
 
 async function restoreBackup() {
   const filename = document.getElementById('restoreSelect').value;
+  const password = document.getElementById('restorePwdInput').value;
+  const msgBox = document.getElementById('restoreMsg');
   if (!filename) { alert('தேதி தேர்வு செய்யவும்'); return; }
+  if (!password) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'Admin Password கட்டாயம்'; return; }
   const ok = confirm('இந்த backup-ஐ பயன்படுத்தி தற்போதைய master_data.xlsx முழுவதும் மீளமைக்கப்படும். தொடரவா?');
   if (!ok) return;
   showLoading('⏳ Master Data மீட்டமைக்கிறது...');
   try {
     const res = await fetch('/api/backups/restore', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({filename: filename})
+      body: JSON.stringify({filename: filename, password: password})
     });
     const result = await res.json();
     hideLoading();
-    if (result.error) { alert('பிழை: ' + result.error); return; }
+    if (result.error) { msgBox.style.color = '#c0392b'; msgBox.textContent = result.error; return; }
     closeModal('modalRestore');
     alert(result.message);
     location.reload();
   } catch (e) {
     hideLoading();
-    alert('பிழை: ' + e);
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+// ==================== MASTER DATA CLEAR ====================
+async function openMasterClearModal() {
+  document.getElementById('modalMasterClear').style.display = 'flex';
+  document.getElementById('masterClearConfirmInput').value = '';
+  document.getElementById('masterClearPwdInput').value = '';
+  document.getElementById('masterClearMsg').textContent = '';
+  const sel = document.getElementById('masterClearYearSelect');
+  sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
+  try {
+    const data = await fetch('/api/years/available').then(r => r.json());
+    const years = data.years && data.years.length ? data.years : ['2024-2025'];
+    sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    sel.value = currentYear && years.includes(currentYear) ? currentYear : years[0];
+  } catch (e) {
+    sel.innerHTML = `<option value="${currentYear || '2024-2025'}">${currentYear || '2024-2025'}</option>`;
+  }
+}
+
+async function doMasterDataClear() {
+  const year = document.getElementById('masterClearYearSelect').value;
+  const confirmText = document.getElementById('masterClearConfirmInput').value.trim();
+  const password = document.getElementById('masterClearPwdInput').value;
+  const msgBox = document.getElementById('masterClearMsg');
+  if (!year) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'ஆண்டு தேர்வு செய்யவும்'; return; }
+  if (confirmText !== 'CLEAR') {
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'உறுதி செய்ய "CLEAR" என சரியாக தட்டச்சு செய்யவும்';
+    return;
+  }
+  if (!password) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'Admin Password கட்டாயம்'; return; }
+  const ok = confirm(`${year} ஆண்டுக்கான Master Data முழுவதும் நிரந்தரமாக அழிக்கப்படும். மற்ற ஆண்டுகள் பாதிக்கப்படாது. தொடரவா?`);
+  if (!ok) return;
+  showLoading(`⏳ ${year} ஆண்டின் Master Data அழிக்கிறது...`);
+  try {
+    const res = await fetch('/api/admin/master_data/clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({year: year, password: password})
+    });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) { msgBox.style.color = '#c0392b'; msgBox.textContent = result.error; return; }
+    closeModal('modalMasterClear');
+    alert(result.message);
+    location.reload();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+// ==================== MASTER ASSIGNING DATA CLEAR ====================
+async function openAssignClearModal() {
+  document.getElementById('modalAssignClear').style.display = 'flex';
+  document.getElementById('assignClearPwdInput').value = '';
+  document.getElementById('assignClearMsg').textContent = '';
+  const sel = document.getElementById('assignClearYearSelect');
+  sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
+  try {
+    const data = await fetch('/api/years/available').then(r => r.json());
+    const years = data.years && data.years.length ? data.years : ['2024-2025'];
+    sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    sel.value = currentYear && years.includes(currentYear) ? currentYear : years[0];
+  } catch (e) {
+    sel.innerHTML = `<option value="${currentYear || '2024-2025'}">${currentYear || '2024-2025'}</option>`;
+  }
+}
+
+async function doAssignDataClear() {
+  const year = document.getElementById('assignClearYearSelect').value;
+  const password = document.getElementById('assignClearPwdInput').value;
+  const msgBox = document.getElementById('assignClearMsg');
+  if (!year) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'ஆண்டு தேர்வு செய்யவும்'; return; }
+  if (!password) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'Admin Password கட்டாயம்'; return; }
+  const ok = confirm(`${year} ஆண்டுக்கான பிரிக்க/அனுப்பு தரவு அனைத்தும் அழிக்கப்பட்டு, Central/Branch Number spool-ம் காலியாகும். தொடரவா?`);
+  if (!ok) return;
+  showLoading('⏳ Assigning Data அழிக்கிறது...');
+  try {
+    const res = await fetch('/api/admin/master_data/assign_clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({year: year, password: password})
+    });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) { msgBox.style.color = '#c0392b'; msgBox.textContent = result.error; return; }
+    closeModal('modalAssignClear');
+    alert(result.message);
+    location.reload();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+// ==================== MASTER PUBLISHER CLEAR ====================
+let pubClearSearchTimeout = null;
+let pubClearSelectedVendor = null;
+let pubClearSelectedCount = 0;
+
+async function openPublisherClearModal() {
+  document.getElementById('modalPublisherClear').style.display = 'flex';
+  document.getElementById('pubClearSearchInput').value = '';
+  document.getElementById('pubClearSearchStatus').textContent = '';
+  document.getElementById('pubClearSearchResults').style.display = 'none';
+  document.getElementById('pubClearSearchResults').innerHTML = '';
+  document.getElementById('pubClearCountBox').style.display = 'none';
+  document.getElementById('pubClearPwdInput').value = '';
+  document.getElementById('pubClearMsg').textContent = '';
+  document.getElementById('pubClearDeleteBtn').disabled = true;
+  pubClearSelectedVendor = null;
+  pubClearSelectedCount = 0;
+
+  const sel = document.getElementById('pubClearYearSelect');
+  sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
+  try {
+    const data = await fetch('/api/years/available').then(r => r.json());
+    const years = data.years && data.years.length ? data.years : ['2024-2025'];
+    sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    sel.value = currentYear && years.includes(currentYear) ? currentYear : years[0];
+  } catch (e) {
+    sel.innerHTML = `<option value="${currentYear || '2024-2025'}">${currentYear || '2024-2025'}</option>`;
+  }
+  setTimeout(() => document.getElementById('pubClearSearchInput').focus(), 100);
+}
+
+function onPubClearYearChange() {
+  // ஆண்டு மாறினால், தேர்ந்தெடுத்த பதிப்பகம்/count ரத்து செய்யப்படும் — மீண்டும் தேர்வு செய்யவும்.
+  pubClearSelectedVendor = null;
+  pubClearSelectedCount = 0;
+  document.getElementById('pubClearCountBox').style.display = 'none';
+  document.getElementById('pubClearDeleteBtn').disabled = true;
+  document.getElementById('pubClearMsg').textContent = '';
+}
+
+function onPubClearSearchInput() {
+  clearTimeout(pubClearSearchTimeout);
+  document.getElementById('pubClearCountBox').style.display = 'none';
+  document.getElementById('pubClearDeleteBtn').disabled = true;
+  pubClearSelectedVendor = null;
+  pubClearSelectedCount = 0;
+  document.getElementById('pubClearMsg').textContent = '';
+  pubClearSearchTimeout = setTimeout(doPubClearSearch, 300);
+}
+
+async function doPubClearSearch() {
+  const q = document.getElementById('pubClearSearchInput').value.trim();
+  const year = document.getElementById('pubClearYearSelect').value;
+  const status = document.getElementById('pubClearSearchStatus');
+  const resultsEl = document.getElementById('pubClearSearchResults');
+  if (q.length < 4) {
+    status.textContent = 'குறைந்தது 4 எழுத்துகள் தட்டச்சு செய்யவும்';
+    resultsEl.style.display = 'none';
+    return;
+  }
+  status.textContent = '⏳ தேடுகிறது...';
+  try {
+    const res = await fetch('/api/publisher_search?q=' + encodeURIComponent(q) + '&year=' + encodeURIComponent(year)).then(r => r.json());
+    if (res.error) { status.textContent = res.error; resultsEl.style.display = 'none'; return; }
+    if (!res.length) { status.textContent = 'பொருந்தும் பதிப்பகம் இல்லை'; resultsEl.style.display = 'none'; return; }
+    status.textContent = `${res.length} பதிப்பகங்கள் கிடைத்தன — ஒன்றைத் தேர்வு செய்யவும்`;
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = res.map(v =>
+      `<div onclick="selectPublisherForClear('${escAttr(v)}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:0.88rem;" onmouseover="this.style.background='#f0fdfa'" onmouseout="this.style.background=''">${escHtml(v)}</div>`
+    ).join('');
+  } catch (e) {
+    status.textContent = 'பிழை: ' + e;
+    resultsEl.style.display = 'none';
+  }
+}
+
+async function selectPublisherForClear(vendor) {
+  pubClearSelectedVendor = vendor;
+  document.getElementById('pubClearSearchResults').style.display = 'none';
+  document.getElementById('pubClearSearchStatus').textContent = '🏢 ' + vendor;
+  const year = document.getElementById('pubClearYearSelect').value;
+  const countBox = document.getElementById('pubClearCountBox');
+  countBox.style.display = 'block';
+  countBox.textContent = '⏳ புத்தகங்கள் எண்ணிக்கை பார்க்கிறது...';
+  document.getElementById('pubClearDeleteBtn').disabled = true;
+  try {
+    const res = await fetch('/api/admin/master_publisher_clear/count?vendor=' + encodeURIComponent(vendor) + '&year=' + encodeURIComponent(year)).then(r => r.json());
+    if (res.error) { countBox.textContent = '⚠️ ' + res.error; return; }
+    pubClearSelectedCount = res.count;
+    if (res.count === 0) {
+      countBox.textContent = `🏢 ${vendor} — ${year} ஆண்டில் புத்தகங்கள் இல்லை`;
+      document.getElementById('pubClearDeleteBtn').disabled = true;
+    } else {
+      countBox.textContent = `🏢 ${vendor} — ${year} ஆண்டில் தற்போது மொத்தம் ${res.count} புத்தகங்கள் உள்ளன. இவை அனைத்தும் நீக்கப்படும்.`;
+      document.getElementById('pubClearDeleteBtn').disabled = false;
+    }
+  } catch (e) {
+    countBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+async function doMasterPublisherClear() {
+  const msgBox = document.getElementById('pubClearMsg');
+  if (!pubClearSelectedVendor) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'பதிப்பகம் தேர்வு செய்யவும்'; return; }
+  const year = document.getElementById('pubClearYearSelect').value;
+  const password = document.getElementById('pubClearPwdInput').value;
+  if (!password) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'Admin Password கட்டாயம்'; return; }
+  const ok = confirm(`"${pubClearSelectedVendor}" பதிப்பகத்தின் ${year} ஆண்டுக்குரிய ${pubClearSelectedCount} புத்தகங்களும் நிரந்தரமாக நீக்கப்படும். இதை திரும்பப் பெற முடியாது. தொடரவா?`);
+  if (!ok) return;
+  showLoading(`⏳ "${pubClearSelectedVendor}" பதிப்பகத்தின் புத்தகங்கள் நீக்குகிறது...`);
+  try {
+    const res = await fetch('/api/admin/master_publisher_clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({vendor: pubClearSelectedVendor, year: year, password: password})
+    });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) { msgBox.style.color = '#c0392b'; msgBox.textContent = result.error; return; }
+    closeModal('modalPublisherClear');
+    alert(result.message);
+    location.reload();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+// ==================== MASTER TITLE CHANGE ====================
+let titleChangeSearchTimeout = null;
+let titleChangeSelectedTitle = null;
+let titleChangeSelectedVendor = null;
+let titleChangeSelectedCount = 0;
+let titleChangeSelectedBookId = null;
+let titleChangeBookIdOptions = [];
+
+function resetTitleChangeBookIdUI() {
+  document.getElementById('titleChangeBookIdWrap').style.display = 'none';
+  document.getElementById('titleChangeBookIdInput').value = '';
+  document.getElementById('titleChangeBookIdInput').style.display = 'block';
+  document.getElementById('titleChangeBookIdSelect').style.display = 'none';
+  document.getElementById('titleChangeBookIdSelect').innerHTML = '';
+  document.getElementById('titleChangeBookIdHint').style.display = 'none';
+  titleChangeSelectedBookId = null;
+  titleChangeBookIdOptions = [];
+}
+
+async function openTitleChangeModal(presetTitle) {
+  document.getElementById('modalTitleChange').style.display = 'flex';
+  document.getElementById('titleChangeSearchInput').value = presetTitle || '';
+  document.getElementById('titleChangeSearchStatus').textContent = '';
+  document.getElementById('titleChangeSearchResults').style.display = 'none';
+  document.getElementById('titleChangeSearchResults').innerHTML = '';
+  document.getElementById('titleChangeVendorWrap').style.display = 'none';
+  document.getElementById('titleChangeVendorSelect').innerHTML = '';
+  document.getElementById('titleChangeCountBox').style.display = 'none';
+  resetTitleChangeBookIdUI();
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeNewTitleInput').value = '';
+  document.getElementById('titleChangePwdInput').value = '';
+  document.getElementById('titleChangeMsg').textContent = '';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  titleChangeSelectedTitle = null;
+  titleChangeSelectedVendor = null;
+  titleChangeSelectedCount = 0;
+  titleChangeSelectedBookId = null;
+  titleChangeBookIdOptions = [];
+
+  const sel = document.getElementById('titleChangeYearSelect');
+  sel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
+  try {
+    const data = await fetch('/api/years/available').then(r => r.json());
+    const years = data.years && data.years.length ? data.years : ['2024-2025'];
+    sel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+    sel.value = currentYear && years.includes(currentYear) ? currentYear : years[0];
+  } catch (e) {
+    sel.innerHTML = `<option value="${currentYear || '2024-2025'}">${currentYear || '2024-2025'}</option>`;
+  }
+
+  if (presetTitle) {
+    // கவனிக்க தாவலிலிருந்து வந்தால் — தலைப்பு ஏற்கனவே தெரியும், நேரடியாக பதிப்பக பட்டியலை காட்டு
+    document.getElementById('titleChangeSearchStatus').textContent = '📖 ' + presetTitle;
+    await selectTitleForChange(presetTitle);
+  } else {
+    setTimeout(() => document.getElementById('titleChangeSearchInput').focus(), 100);
+  }
+}
+
+function onTitleChangeYearChange() {
+  // ஆண்டு மாறினால், தேர்ந்தெடுத்த தலைப்பு/பதிப்பகம் ரத்து செய்யப்படும் — மீண்டும் தேர்வு செய்யவும்.
+  titleChangeSelectedTitle = null;
+  titleChangeSelectedVendor = null;
+  titleChangeSelectedCount = 0;
+  document.getElementById('titleChangeVendorWrap').style.display = 'none';
+  document.getElementById('titleChangeCountBox').style.display = 'none';
+  resetTitleChangeBookIdUI();
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  document.getElementById('titleChangeMsg').textContent = '';
+}
+
+function onTitleChangeSearchInput() {
+  clearTimeout(titleChangeSearchTimeout);
+  document.getElementById('titleChangeVendorWrap').style.display = 'none';
+  document.getElementById('titleChangeCountBox').style.display = 'none';
+  resetTitleChangeBookIdUI();
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  titleChangeSelectedTitle = null;
+  titleChangeSelectedVendor = null;
+  titleChangeSelectedCount = 0;
+  document.getElementById('titleChangeMsg').textContent = '';
+  titleChangeSearchTimeout = setTimeout(doTitleChangeSearch, 300);
+}
+
+async function doTitleChangeSearch() {
+  const q = document.getElementById('titleChangeSearchInput').value.trim();
+  const year = document.getElementById('titleChangeYearSelect').value;
+  const status = document.getElementById('titleChangeSearchStatus');
+  const resultsEl = document.getElementById('titleChangeSearchResults');
+  if (q.length < 4) {
+    status.textContent = 'குறைந்தது 4 எழுத்துகள் தட்டச்சு செய்யவும்';
+    resultsEl.style.display = 'none';
+    return;
+  }
+  status.textContent = '⏳ தேடுகிறது...';
+  try {
+    const res = await fetch('/api/title_search?q=' + encodeURIComponent(q) + '&year=' + encodeURIComponent(year)).then(r => r.json());
+    if (res.error) { status.textContent = res.error; resultsEl.style.display = 'none'; return; }
+    if (!res.length) { status.textContent = 'பொருந்தும் தலைப்பு இல்லை'; resultsEl.style.display = 'none'; return; }
+    status.textContent = `${res.length} தலைப்புகள் கிடைத்தன — ஒன்றைத் தேர்வு செய்யவும்`;
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = res.map(t =>
+      `<div onclick="selectTitleForChange('${escAttr(t)}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:0.88rem;" onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">${escHtml(t)}</div>`
+    ).join('');
+  } catch (e) {
+    status.textContent = 'பிழை: ' + e;
+    resultsEl.style.display = 'none';
+  }
+}
+
+// தலைப்பு தேர்ந்தெடுத்தவுடன் — அந்த தலைப்பை எந்தெந்த பதிப்பகங்கள் கொடுத்துள்ளன
+// என்பதன் பட்டியலை காட்டுதல் (ஒரே தலைப்பு வெவ்வேறு பதிப்பகங்களில் இருக்கலாம்).
+async function selectTitleForChange(title) {
+  titleChangeSelectedTitle = title;
+  titleChangeSelectedVendor = null;
+  titleChangeSelectedCount = 0;
+  document.getElementById('titleChangeSearchResults').style.display = 'none';
+  document.getElementById('titleChangeSearchStatus').textContent = '📖 ' + title;
+  const year = document.getElementById('titleChangeYearSelect').value;
+
+  const vendorWrap = document.getElementById('titleChangeVendorWrap');
+  const vendorSel = document.getElementById('titleChangeVendorSelect');
+  const countBox = document.getElementById('titleChangeCountBox');
+  resetTitleChangeBookIdUI();
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  countBox.style.display = 'none';
+  vendorWrap.style.display = 'block';
+  vendorSel.innerHTML = '<option>-- ஏற்றுகிறது --</option>';
+
+  try {
+    const res = await fetch('/api/title_vendors?title=' + encodeURIComponent(title) + '&year=' + encodeURIComponent(year)).then(r => r.json());
+    if (res.error) { vendorSel.innerHTML = `<option>${res.error}</option>`; return; }
+    if (!res.length) { vendorSel.innerHTML = '<option>பதிப்பகம் இல்லை</option>'; return; }
+    vendorSel.innerHTML = res.map(v =>
+      `<option value="${escAttr(v.vendor_name)}">${escHtml(v.vendor_name)} (${v.count} பிரதிகள்)</option>`
+    ).join('');
+    // ஒரே ஒரு பதிப்பகம் மட்டும் இருந்தால், தானாகவே தேர்ந்தெடுக்கப்பட்டு count காட்டப்படும்.
+    // பல பதிப்பகங்கள் இருந்தால், Admin கைமுறையாக தேர்ந்தெடுக்க வேண்டும்.
+    onTitleChangeVendorSelected();
+  } catch (e) {
+    vendorSel.innerHTML = `<option>பிழை: ${e}</option>`;
+  }
+}
+
+async function onTitleChangeVendorSelected() {
+  const vendorSel = document.getElementById('titleChangeVendorSelect');
+  const vendor = vendorSel.value;
+  titleChangeSelectedVendor = vendor;
+  const year = document.getElementById('titleChangeYearSelect').value;
+  const countBox = document.getElementById('titleChangeCountBox');
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  resetTitleChangeBookIdUI();
+  if (!vendor) { countBox.style.display = 'none'; return; }
+
+  countBox.style.display = 'block';
+  countBox.textContent = '⏳ பிரதிகள் எண்ணிக்கை பார்க்கிறது...';
+  try {
+    const res = await fetch('/api/admin/master_title_change/count?title=' + encodeURIComponent(titleChangeSelectedTitle) +
+      '&vendor=' + encodeURIComponent(vendor) + '&year=' + encodeURIComponent(year)).then(r => r.json());
+    if (res.error) { countBox.textContent = '⚠️ ' + res.error; return; }
+    titleChangeBookIdOptions = res.book_ids || [];
+
+    if (res.total_count === 0) {
+      countBox.textContent = `📖 "${titleChangeSelectedTitle}" (${vendor}) — ${year} ஆண்டில் பிரதிகள் இல்லை`;
+      return;
+    }
+
+    const distinctBookIds = titleChangeBookIdOptions.filter(b => b.book_id);
+
+    if (distinctBookIds.length > 1) {
+      // ஒன்றுக்கும் மேற்பட்ட Book Id — Admin ஒன்றை கட்டாயம் தேர்ந்தெடுக்க வேண்டும்.
+      countBox.textContent = `📖 "${titleChangeSelectedTitle}" — பதிப்பகம்: ${vendor} — ${year} ஆண்டில் மொத்தம் ${res.total_count} பிரதிகள் (${distinctBookIds.length} வெவ்வேறு Book Id-களில்). கீழே ஒரு Book Id-ஐ தேர்ந்தெடுக்கவும்.`;
+
+      const bookIdWrap = document.getElementById('titleChangeBookIdWrap');
+      const bookIdInput = document.getElementById('titleChangeBookIdInput');
+      const bookIdSelect = document.getElementById('titleChangeBookIdSelect');
+      const bookIdHint = document.getElementById('titleChangeBookIdHint');
+      bookIdInput.style.display = 'none';
+      bookIdSelect.style.display = 'block';
+      bookIdHint.style.display = 'block';
+      bookIdSelect.innerHTML = '<option value="">-- Book Id தேர்ந்தெடுக்கவும் --</option>' +
+        distinctBookIds.map(b => `<option value="${escAttr(b.book_id)}">${escHtml(b.book_id)} (${b.count} பிரதிகள்)</option>`).join('');
+      bookIdWrap.style.display = 'block';
+    } else {
+      // ஒரே ஒரு Book Id (அல்லது Book Id இல்லை) — நேரடியாக தொடரலாம்.
+      titleChangeSelectedCount = res.total_count;
+      titleChangeSelectedBookId = distinctBookIds.length === 1 ? distinctBookIds[0].book_id : null;
+      countBox.textContent = `📖 "${titleChangeSelectedTitle}" — பதிப்பகம்: ${vendor} — ${year} ஆண்டில் தற்போது மொத்தம் ${res.total_count} பிரதிகள் உள்ளன. இவை மட்டும் புதுப்பிக்கப்படும்.`;
+
+      const bookIdWrap = document.getElementById('titleChangeBookIdWrap');
+      const bookIdInput = document.getElementById('titleChangeBookIdInput');
+      bookIdInput.style.display = 'block';
+      document.getElementById('titleChangeBookIdSelect').style.display = 'none';
+      bookIdInput.value = titleChangeSelectedBookId || 'இல்லை';
+      bookIdWrap.style.display = 'block';
+
+      document.getElementById('titleChangeNewTitleInput').value = titleChangeSelectedTitle;
+      document.getElementById('titleChangeNewTitleWrap').style.display = 'block';
+      document.getElementById('titleChangeSaveBtn').disabled = false;
+    }
+  } catch (e) {
+    countBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+// Admin பல Book Id-களில் இருந்து ஒன்றை தேர்ந்தெடுத்தவுடன் — அதற்குரிய
+// பிரதிகள் எண்ணிக்கை காட்டி, "புதிய தலைப்பு" உள்ளீட்டை செயல்படுத்துதல்.
+async function onTitleChangeBookIdSelected() {
+  const bookIdSelect = document.getElementById('titleChangeBookIdSelect');
+  const bookId = bookIdSelect.value;
+  const countBox = document.getElementById('titleChangeCountBox');
+  const year = document.getElementById('titleChangeYearSelect').value;
+  document.getElementById('titleChangeNewTitleWrap').style.display = 'none';
+  document.getElementById('titleChangeSaveBtn').disabled = true;
+  titleChangeSelectedBookId = null;
+  titleChangeSelectedCount = 0;
+  if (!bookId) return;
+
+  try {
+    const res = await fetch('/api/admin/master_title_change/count?title=' + encodeURIComponent(titleChangeSelectedTitle) +
+      '&vendor=' + encodeURIComponent(titleChangeSelectedVendor) + '&year=' + encodeURIComponent(year) +
+      '&book_id=' + encodeURIComponent(bookId)).then(r => r.json());
+    if (res.error) { countBox.textContent = '⚠️ ' + res.error; return; }
+    titleChangeSelectedBookId = bookId;
+    titleChangeSelectedCount = res.count;
+    countBox.textContent = `📖 "${titleChangeSelectedTitle}" — பதிப்பகம்: ${titleChangeSelectedVendor} — Book Id: ${bookId} — ${year} ஆண்டில் ${res.count} பிரதிகள் உள்ளன. இவை மட்டும் புதுப்பிக்கப்படும்.`;
+    document.getElementById('titleChangeNewTitleInput').value = titleChangeSelectedTitle;
+    document.getElementById('titleChangeNewTitleWrap').style.display = 'block';
+    document.getElementById('titleChangeSaveBtn').disabled = false;
+  } catch (e) {
+    countBox.textContent = 'பிழை: ' + e;
+  }
+}
+
+async function doMasterTitleChange() {
+  const msgBox = document.getElementById('titleChangeMsg');
+  if (!titleChangeSelectedTitle) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'தலைப்பு தேர்வு செய்யவும்'; return; }
+  if (!titleChangeSelectedVendor) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'பதிப்பகம் தேர்வு செய்யவும்'; return; }
+  if (titleChangeBookIdOptions.filter(b => b.book_id).length > 1 && !titleChangeSelectedBookId) {
+    msgBox.style.color = '#c0392b'; msgBox.textContent = 'Book Id தேர்வு செய்யவும்'; return;
+  }
+  const year = document.getElementById('titleChangeYearSelect').value;
+  const newTitle = document.getElementById('titleChangeNewTitleInput').value.trim();
+  const password = document.getElementById('titleChangePwdInput').value;
+  if (!newTitle) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'புதிய தலைப்பு கட்டாயம்'; return; }
+  if (!password) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'Admin Password கட்டாயம்'; return; }
+  if (newTitle === titleChangeSelectedTitle) {
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'புதிய தலைப்பு, தற்போதைய தலைப்பை விட வேறுபட்டதாக இருக்க வேண்டும்';
+    return;
+  }
+  const bookIdNote = titleChangeSelectedBookId ? ` — Book Id: ${titleChangeSelectedBookId}` : '';
+  const ok = confirm(`"${titleChangeSelectedTitle}" (பதிப்பகம்: ${titleChangeSelectedVendor}${bookIdNote}) — ${year} ஆண்டுக்குரிய ${titleChangeSelectedCount} பிரதிகளும் "${newTitle}" எனப் புதுப்பிக்கப்படும். மற்ற Book Id / பதிப்பகங்களின் அதே தலைப்பு பாதிக்கப்படாது. தொடரவா?`);
+  if (!ok) return;
+  showLoading(`⏳ ${titleChangeSelectedCount} பிரதிகளும் புதுப்பிக்கிறது...`);
+  try {
+    const res = await fetch('/api/admin/master_title_change', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({old_title: titleChangeSelectedTitle, vendor: titleChangeSelectedVendor, book_id: titleChangeSelectedBookId || '', new_title: newTitle, year: year, password: password})
+    });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) { msgBox.style.color = '#c0392b'; msgBox.textContent = result.error; return; }
+    closeModal('modalTitleChange');
+    alert(result.message);
+    location.reload();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'பிழை: ' + e;
   }
 }
 
@@ -1220,6 +2062,203 @@ async function doUploadExcel() {
     toast('✅ ' + result.message, 'success');
     await initYearSelector();
     updateLiveTicker();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'Server பிழை: ' + e;
+  }
+}
+
+// ==================== மாநிலப் பதிவெண் Bulk Update (Admin) ====================
+function openUploadStateAccModal() {
+  document.getElementById('uploadStateAccFile').value = '';
+  document.getElementById('uploadStateAccMsg').textContent = '';
+  document.getElementById('modalUploadStateAcc').style.display = 'flex';
+}
+
+async function doUploadStateAcc() {
+  const f = document.getElementById('uploadStateAccFile').files[0];
+  const msgBox = document.getElementById('uploadStateAccMsg');
+  if (!f) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'கோப்பை தேர்ந்தெடுக்கவும்'; return; }
+
+  const formData = new FormData();
+  formData.append('file', f);
+
+  showLoading('⏳ மாநிலப் பதிவெண் புதுப்பிக்கப்படுகிறது...');
+  try {
+    const res = await fetch('/api/admin/upload_state_acc_update', { method: 'POST', body: formData });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) {
+      msgBox.style.color = '#c0392b';
+      msgBox.textContent = result.error;
+      return;
+    }
+    msgBox.style.color = '#16a34a';
+    msgBox.textContent = '✅ ' + result.message;
+    toast('✅ ' + result.message, 'success');
+    updateLiveTicker();
+  } catch (e) {
+    hideLoading();
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'Server பிழை: ' + e;
+  }
+}
+
+// ==================== BOOK COVER — VIEW (எல்லோருக்கும்) ====================
+function viewBookCover(bookId, title) {
+  document.getElementById('bookCoverViewTitle').textContent = title || '';
+  document.getElementById('bookCoverViewImg').src = '/api/book_cover/' + encodeURIComponent(bookId) + '?t=' + Date.now();
+  document.getElementById('modalBookCoverView').style.display = 'flex';
+}
+
+// ==================== BOOK COVER — UPLOAD (Admin மட்டும்) ====================
+let bookCoverDropdownItems = [];   // "ஒரே தலைப்பில் வேறு விலை" quick-pick dropdown
+let selectedBookCoverItem = null;  // தற்போது தேர்ந்தெடுக்கப்பட்ட புத்தகம் (search அல்லது dropdown எதிலிருந்தும்)
+let bookCoverSearchTimeout = null;
+
+async function openBookCoverUploadModal() {
+  document.getElementById('bookCoverUploadMsg').textContent = '';
+  document.getElementById('bookCoverUploadFile').value = '';
+  document.getElementById('bookCoverSearchInput').value = '';
+  document.getElementById('bookCoverSearchStatus').textContent = '';
+  document.getElementById('bookCoverSearchResults').innerHTML = '';
+  const titleBox = document.getElementById('bookCoverUploadTitle');
+  titleBox.style.display = 'none';
+  titleBox.innerHTML = '';
+  selectedBookCoverItem = null;
+
+  const sel = document.getElementById('bookCoverBookIdSelect');
+  sel.innerHTML = '<option value="">ஏற்றுகிறது...</option>';
+  document.getElementById('modalBookCoverUpload').style.display = 'flex';
+  try {
+    bookCoverDropdownItems = await fetch('/api/admin/multi_price_book_ids?year=' + encodeURIComponent(currentYear)).then(r => r.json());
+    if (!bookCoverDropdownItems.length) {
+      sel.innerHTML = '<option value="">ஒரே தலைப்பில் வேறு விலை உள்ள Book Id எதுவும் இல்லை</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">-- Book Id தேர்ந்தெடுக்கவும் --</option>' +
+      bookCoverDropdownItems.map(it =>
+        `<option value="${escAttr(it.bookId)}">${escHtml(it.bookId)} — ${escHtml((it.title||'').substring(0,40))} (₹${escHtml(it.price)})${it.hasCover ? ' ✅' : ''}</option>`
+      ).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">பிழை — மீண்டும் முயற்சிக்கவும்</option>';
+  }
+}
+
+// "பிரிக்க" தேடல் அட்டவணையில் இருந்து நேரடியாக ஒரு குறிப்பிட்ட Book Id-க்கு
+// முகப்புப் படம் ஏற்ற/மாற்ற — Modal-ஐ அந்த புத்தகம் ஏற்கனவே தேர்ந்தெடுக்கப்பட்ட
+// நிலையில் திறக்கும் (மீண்டும் தேட வேண்டியதில்லை).
+async function openBookCoverUploadModalFor(bookId, title, vendor, price, hasCover) {
+  await openBookCoverUploadModal();
+  selectedBookCoverItem = { bookId, title, vendor, price, hasCover };
+  document.getElementById('bookCoverBookIdSelect').value = '';
+  document.getElementById('bookCoverSearchInput').value = '';
+  _showSelectedBookCoverItem();
+}
+
+function _showSelectedBookCoverItem() {
+  const titleBox = document.getElementById('bookCoverUploadTitle');
+  const item = selectedBookCoverItem;
+  if (!item) { titleBox.style.display = 'none'; titleBox.innerHTML = ''; return; }
+  titleBox.style.display = 'block';
+  titleBox.innerHTML = `📖 <strong>${escHtml(item.title)}</strong> (Book Id: ${escHtml(item.bookId)}) — பதிப்பகம்: ${escHtml(item.vendor || '—')} — விலை: ₹${escHtml(item.price)}` +
+    (item.hasCover ? ' <span style="color:#16a34a;">(ஏற்கனவே படம் உள்ளது — புதிதாக அப்லோட் செய்தால் மாற்றப்படும்)</span>' : '');
+}
+
+// ---- வழி 1: Book Id / தலைப்பு தேடி தேர்வு (எந்த புத்தகமும்) ----
+function onBookCoverSearchInput() {
+  clearTimeout(bookCoverSearchTimeout);
+  bookCoverSearchTimeout = setTimeout(doBookCoverSearch, 300);
+}
+
+async function doBookCoverSearch() {
+  const q = document.getElementById('bookCoverSearchInput').value.trim();
+  const status = document.getElementById('bookCoverSearchStatus');
+  const results = document.getElementById('bookCoverSearchResults');
+  if (q.length < 2) { status.textContent = ''; results.innerHTML = ''; return; }
+  status.innerHTML = '<span class="loading"><span class="spinner"></span> தேடுகிறது...</span>';
+  try {
+    const items = await fetch('/api/admin/search_book_for_cover?q=' + encodeURIComponent(q) + '&year=' + encodeURIComponent(currentYear)).then(r => r.json());
+    if (!items.length) {
+      status.textContent = 'பொருந்தும் புத்தகம் இல்லை';
+      results.innerHTML = '';
+      return;
+    }
+    status.textContent = `${items.length} புத்தகங்கள் கிடைத்தன — ஒன்றைத் தேர்வு செய்யவும்`;
+    results.innerHTML = items.map((it, i) =>
+      `<div data-idx="${i}" onclick="selectBookCoverSearchResult(${i})" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;font-size:0.85rem;">
+        <div style="font-weight:600;">${escHtml(it.title)} ${it.hasCover ? '✅' : ''}</div>
+        <div style="color:var(--muted);">Book Id: ${escHtml(it.bookId)} • பதிப்பகம்: ${escHtml(it.vendor || '—')} • ₹${escHtml(it.price)}</div>
+      </div>`
+    ).join('');
+    window._bookCoverSearchItems = items;
+  } catch (e) {
+    status.textContent = 'தேடலில் பிழை';
+    results.innerHTML = '';
+  }
+}
+
+function selectBookCoverSearchResult(idx) {
+  const item = (window._bookCoverSearchItems || [])[idx];
+  if (!item) return;
+  selectedBookCoverItem = item;
+  document.getElementById('bookCoverBookIdSelect').value = '';   // dropdown-ல் இருந்தால் அதை clear செய்
+  document.getElementById('bookCoverUploadMsg').textContent = '';
+  _showSelectedBookCoverItem();
+}
+
+// ---- வழி 2: "ஒரே தலைப்பில் வேறு விலை" quick-pick dropdown ----
+function onBookCoverBookIdChange() {
+  const bookId = document.getElementById('bookCoverBookIdSelect').value;
+  document.getElementById('bookCoverUploadMsg').textContent = '';
+  if (!bookId) { selectedBookCoverItem = null; _showSelectedBookCoverItem(); return; }
+  const item = bookCoverDropdownItems.find(it => it.bookId === bookId);
+  if (item) {
+    selectedBookCoverItem = item;
+    // dropdown-ல் தேர்வு செய்தால், search box-ஐ clear செய்
+    document.getElementById('bookCoverSearchInput').value = '';
+    document.getElementById('bookCoverSearchResults').innerHTML = '';
+    document.getElementById('bookCoverSearchStatus').textContent = '';
+    _showSelectedBookCoverItem();
+  }
+}
+
+async function doUploadBookCover() {
+  const item = selectedBookCoverItem;
+  const f = document.getElementById('bookCoverUploadFile').files[0];
+  const msgBox = document.getElementById('bookCoverUploadMsg');
+
+  if (!item || !item.bookId) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'மேலே ஒரு புத்தகத்தை தேடி அல்லது பட்டியலில் தேர்ந்தெடுக்கவும்'; return; }
+  if (!f) { msgBox.style.color = '#c0392b'; msgBox.textContent = 'முகப்புப் படத்தை தேர்ந்தெடுக்கவும்'; return; }
+
+  const ext = f.name.substring(f.name.lastIndexOf('.')).toLowerCase();
+  if (!['.jpg', '.jpeg', '.jfif'].includes(ext)) {
+    msgBox.style.color = '#c0392b';
+    msgBox.textContent = 'jpg / jpeg / jfif படங்கள் மட்டுமே அனுமதிக்கப்படும்';
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('book_id', item.bookId);
+  formData.append('title', item.title || '');
+  formData.append('file', f);
+
+  showLoading('⏳ முகப்புப் படம் அப்லோட் செய்கிறது...');
+  try {
+    const res = await fetch('/api/admin/book_cover/upload', { method: 'POST', body: formData });
+    const result = await res.json();
+    hideLoading();
+    if (result.error) {
+      msgBox.style.color = '#c0392b';
+      msgBox.textContent = result.error;
+      return;
+    }
+    msgBox.style.color = '#16a34a';
+    msgBox.textContent = '✅ ' + result.message;
+    toast('✅ ' + result.message, 'success');
+    item.hasCover = true;
+    _showSelectedBookCoverItem();
   } catch (e) {
     hideLoading();
     msgBox.style.color = '#c0392b';

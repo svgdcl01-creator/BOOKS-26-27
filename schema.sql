@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS reclaimed_branch (
 CREATE INDEX IF NOT EXISTS idx_reclaimed_branch_lib ON reclaimed_branch (librarian_id);
 
 -- ==========================================================
+-- புத்தக முகப்புப் படங்கள் (Book cover / front-page photos) —
+-- ஒரே தலைப்பில் வேறு வேறு விலைகள் உள்ள புத்தகங்களை பிரித்தறிய,
+-- ஒவ்வொரு Book Id-க்கும் ஒரு முகப்புப் படத்தை Admin அப்லோட் செய்யலாம்.
+-- படம் நேரடியாக DB-லேயே (bytea) சேமிக்கப்படுகிறது — hosting-ன்
+-- filesystem temporary ஆனதால், கோப்பாக disk-ல் சேமிக்கக் கூடாது.
+-- ==========================================================
+CREATE TABLE IF NOT EXISTS book_covers (
+    book_id      TEXT PRIMARY KEY,
+    title        TEXT,
+    image        BYTEA NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+    uploaded_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- ==========================================================
 -- 2025-2026 முதல் ஒவ்வொரு ஆண்டும் central/branch எண் 1-ல் இருந்து
 -- மீண்டும் தொடங்குவதால், reclaim pool-ல் ஆண்டு சேர்க்க வேண்டும் —
 -- இல்லையெனில் "central_number=1" 2024-25 மற்றும் 2025-26 இரண்டிலும்

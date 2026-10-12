@@ -8,14 +8,18 @@ Original main.py-ன் Excel/pandas logic-ஐ PostgreSQL-க்கு migrate �
 """
 import os
 import re
+import time
 import threading
 import tempfile
 import uuid
+import itertools
+from urllib.parse import quote
 from collections import defaultdict
 from datetime import datetime
 from io import BytesIO
 import pandas as pd
 import psycopg2.extras
+from PIL import Image as PILImage
 from flask import Flask, request, jsonify, session, redirect, make_response, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -59,16 +63,23 @@ LOGIN_HTML = """
 <style>
   body{font-family:'Noto Sans Tamil',sans-serif;background:#0b3d3d;display:flex;
        align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px;box-sizing:border-box;}
-  .box{background:white;padding:40px 32px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.3);
-       width:100%;max-width:340px;box-sizing:border-box;}
-  h2{color:#0b3d3d;margin-top:0;text-align:center;}
-  label{display:block;font-size:13px;font-weight:600;color:#0b3d3d;margin:14px 0 6px;}
-  select, input{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;
-        font-size:1rem;box-sizing:border-box;font-family:'Noto Sans Tamil',sans-serif;}
-  button{width:100%;padding:12px;background:#0b3d3d;color:white;border:none;
-         border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;margin-top:18px;}
-  .err{color:#c0392b;text-align:center;margin-top:10px;font-size:.9rem;}
+  .box{background:white;padding:44px 34px;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.3);
+       width:100%;max-width:400px;box-sizing:border-box;}
+  h2{color:#0b3d3d;margin-top:0;text-align:center;font-size:1.5rem;line-height:1.4;}
+  label{display:block;font-size:15px;font-weight:600;color:#0b3d3d;margin:16px 0 7px;}
+  select, input{width:100%;padding:14px;border:1px solid #ccc;border-radius:10px;
+        font-size:1.05rem;box-sizing:border-box;font-family:'Noto Sans Tamil',sans-serif;}
+  button{width:100%;padding:15px;background:#0b3d3d;color:white;border:none;
+         border-radius:10px;font-size:1.1rem;font-weight:600;cursor:pointer;margin-top:20px;}
+  .err{color:#c0392b;text-align:center;margin-top:10px;font-size:.95rem;}
   #pwdField{display:none;}
+  @media (max-width:480px){
+    .box{max-width:94vw;padding:36px 24px;}
+    h2{font-size:1.35rem;}
+    label{font-size:14px;}
+    select, input{font-size:1.15rem;padding:15px;}
+    button{font-size:1.15rem;padding:16px;}
+  }
 </style></head>
 <body>
 <div class="box">
@@ -113,8 +124,8 @@ function togglePwd(){
 # அதுவரை/settings-ல் இல்லைன்னா, இந்த DEFAULT மதிப்புகள் பயன்படுத்தப்படும்.
 # (librarian-க்கு password தேவையில்லை)
 DEFAULT_PASSWORDS = {
-    "admin": "Dlodgl@789",
-    "dclstaff": "123456789",
+    "admin": "9443393428",
+    "dclstaff": "12345678",
 }
 ACCOUNT_ROLES = {
     "admin": "admin",
@@ -182,6 +193,14 @@ def _set_password_hash(username, new_password):
             (f"pwd_{username}", pwd_hash)
         )
     return True
+
+
+def _verify_admin_password(password):
+    """Master Data (Restore / Clear / Assigning Data Clear) — மூன்று
+    option-க்கும் Admin password (தற்போது settings-ல் / DEFAULT_PASSWORDS-ல்
+    உள்ளது — Dlodgl@789) சரிபார்க்க பயன்படும்."""
+    pwd_hash = _get_password_hash("admin")
+    return bool(pwd_hash and password and check_password_hash(pwd_hash, password))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -349,6 +368,9 @@ def _build_fuzzy_cache(app_ctx, year):
                     })
                 _fuzzy_cache_progress[year] = int((i + 1) / n * 100) if n else 100
 
+            # கவனிக்க தாவலில் காட்டும் தலைப்புகள் A-Z வரிசையில் (canonical title அடிப்படையில்)
+            clusters.sort(key=lambda c: c["canonical"].lower())
+
             _fuzzy_cache[year] = clusters
             _fuzzy_cache_status[year] = "done"
             _fuzzy_cache_progress[year] = 100
@@ -409,6 +431,40 @@ def api_years_librarian_view_set():
     if not year:
         return jsonify({"error": "ஆண்டு தேர்ந்தெடுக்கவும்"}), 400
     _set_setting("active_academic_year", year)
+    return jsonify({"success": True, "active_year": year})
+
+
+# ==========================================================
+#   - /api/years/staff_view (GET)  : dclstaff-க்கு Admin வைத்த ஆண்டு
+#                                      (dclstaff-க்கு selector காட்டப்படாது;
+#                                      Admin main ஆண்டு dropdown-ல் மாற்றும்போதே
+#                                      இதுவும் தானாக புதுப்பிக்கப்படும்)
+#   - /api/years/staff_view (POST) : admin மட்டும் — dclstaff பார்வைக்கான
+#                                      ஆண்டை மாற்ற
+# ==========================================================
+@app.route("/api/years/staff_view", methods=["GET"])
+@login_required
+def api_years_staff_view_get():
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT DISTINCT academic_year FROM books "
+            "WHERE academic_year IS NOT NULL AND academic_year != '' "
+            "ORDER BY academic_year DESC"
+        )
+        years = [r["academic_year"] for r in cur.fetchall()] or [BASE_YEAR]
+    active = _get_setting("active_staff_year", years[0])
+    if active not in years:
+        active = years[0]
+    return jsonify({"active_year": active, "years": years})
+
+
+@app.route("/api/years/staff_view", methods=["POST"])
+@admin_required
+def api_years_staff_view_set():
+    year = (request.json or {}).get("year", "").strip()
+    if not year:
+        return jsonify({"error": "ஆண்டு தேர்ந்தெடுக்கவும்"}), 400
+    _set_setting("active_staff_year", year)
     return jsonify({"success": True, "active_year": year})
 
 
@@ -562,20 +618,21 @@ def api_isbn_info():
         return jsonify({"error": "ISBN கொடுக்கப்படவில்லை"}), 400
     with DBConn() as (conn, cur):
         cur.execute(
-            "SELECT vendor_name, price FROM books WHERE isbn=%s AND academic_year=%s "
+            "SELECT vendor_name, price, author FROM books WHERE isbn=%s AND academic_year=%s "
             "AND vendor_name IS NOT NULL AND TRIM(vendor_name) != '' LIMIT 1",
             (isbn, year)
         )
         row = cur.fetchone()
         if not row:
             cur.execute(
-                "SELECT vendor_name, price FROM books WHERE isbn=%s AND academic_year=%s LIMIT 1",
+                "SELECT vendor_name, price, author FROM books WHERE isbn=%s AND academic_year=%s LIMIT 1",
                 (isbn, year)
             )
             row = cur.fetchone()
     return jsonify({
         "vendor_name": (row["vendor_name"] if row else "") or "",
-        "price": (row["price"] if row else "") or ""
+        "price": (row["price"] if row else "") or "",
+        "author": (row["author"] if row else "") or ""
     })
 
 
@@ -650,25 +707,66 @@ _SENT_SQL = f"(NOT ({_UNSENT_SQL}))"
 _TAMIL_TITLE_SQL = "title ~ '[\u0B80-\u0BFF]'"
 
 # ==========================================================
-# NORMALIZED TITLE — "ஒரே தலைப்பு" ஒப்பீடு எங்கும் ஒரே மாதிரி இருக்க
-# (பிரிக்கப்படாதவை, அனுப்பப்பட்டவை, assign-time warning ஆகிய எல்லா
-# இடங்களிலும் இதே normalization பயன்படுத்தப்படுகிறது):
-#   1. இடைவெளிகள் ஒன்றாக சுருக்கப்படும்
-#   2. பெரிய/சிறிய எழுத்து வேறுபாடு பொருட்படுத்தப்படாது
-#   3. "-" (ஹைபன்) இருந்தால், அதற்கு முந்தைய பகுதி மட்டும் ஒப்பிடப்படும் —
-#      இதனால் "இந்தியா-INDIA" மற்றும் "இந்தியா-" ஆகிய இரண்டும்
-#      ஒரே தலைப்பாகவே கருதப்படும் (பின் பகுதி இருந்தாலும், இல்லாவிட்டாலும்)
+# NORMALIZED TITLE — "ஒரே தலைப்பில் வேறு வேறு விலைகள்" (dashboard, Report 8,
+# unassigned isMultiPrice flag, assign-time warning) மற்றும் Report 9
+# (நூலகத்தில் நகல் தலைப்புகள்) — இவை அனைத்திலும் இதே normalization:
+#   1. ஒற்றை/இரட்டை மேற்கோள் குறிகள் (' " ' ' " ") நீக்கப்படும்
+#   2. இடைவெளிகள் ஒன்றாக சுருக்கப்படும்
+#   3. பெரிய/சிறிய எழுத்து வேறுபாடு பொருட்படுத்தப்படாது
+#   4. "-" (ஹைபன்) இருந்தால், அதற்குப் பின் இருக்கும் பகுதியைப் பொறுத்து:
+#      a) ஒன்றுமே இல்லை (காலி) என்றால் (எ.கா. "இந்தியா-")
+#         → split செய்யப்படும் (ஹைபனுக்கு முந்தைய பகுதி மட்டும்)
+#      b) ஆங்கில எழுத்துகள் (A-Z) இருந்தால் (எ.கா. "-Price.Rs.99",
+#         "-PRICE-300") → split செய்யப்படும் (identity suffix)
+#      c) தமிழ் எழுத்துகள் இருந்தால் (எ.கா. "அண்ணல் அம்பேத்கர்- ஜெகதா")
+#         → split செய்யப்படும் (ஆசிரியர்/பதிப்பகம் பெயர் — identity suffix,
+#         2026-09 முதல்: இதுவும் நீக்கப்படும்)
+#      d) வெறும் எண்கள்/அடைப்புக்குறி மட்டும் இருந்தால், ஆங்கில/தமிழ்
+#         எழுத்து ஏதுமில்லாமல் (எ.கா. "பாகம்-1" vs "பாகம்-2",
+#         "Part-1" vs "Part-2") → split வேண்டாம், முழு தலைப்பும்
+#         ஒப்பிடப்படும் (இவை Part/பாகம் எண் — வெவ்வேறு தொகுதிகள்,
+#         ஒன்றல்ல)
+# இதைத் தவிர வேறு எந்த fuzzy match-ம் இங்கு செய்யப்படாது. (85% ஒத்த
+# தலைப்புகள் தேவைக்கு தனியான Fuzzy Match feature ஏற்கனவே உள்ளது.)
 # ==========================================================
-_NORM_TITLE_SQL = (
-    "UPPER(TRIM(SPLIT_PART(REGEXP_REPLACE(TRIM(title), '\\s+', ' ', 'g'), '-', 1)))"
+_QUOTE_CHARS_RE = "['\"\u2018\u2019\u201C\u201D]"
+
+_CLEAN_TITLE_SQL = (
+    "UPPER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(TRIM(title), "
+    "'[''\"\u2018\u2019\u201C\u201D]', '', 'g'), '\\s+', ' ', 'g')))"
 )
+
+_NORM_TITLE_SQL = (
+    "CASE "
+    f"WHEN POSITION('-' IN {_CLEAN_TITLE_SQL}) = 0 THEN {_CLEAN_TITLE_SQL} "
+    "WHEN TRIM(SUBSTRING("
+    f"{_CLEAN_TITLE_SQL} FROM POSITION('-' IN {_CLEAN_TITLE_SQL}) + 1"
+    ")) = '' "
+    f"THEN TRIM(SPLIT_PART({_CLEAN_TITLE_SQL}, '-', 1)) "
+    "WHEN TRIM(SUBSTRING("
+    f"{_CLEAN_TITLE_SQL} FROM POSITION('-' IN {_CLEAN_TITLE_SQL}) + 1"
+    ")) ~ '[A-Za-z\u0B80-\u0BFF]' "
+    f"THEN TRIM(SPLIT_PART({_CLEAN_TITLE_SQL}, '-', 1)) "
+    f"ELSE {_CLEAN_TITLE_SQL} "
+    "END"
+)
+
+# அறிக்கை 11-க்கு மட்டும்: quote/space-clean, hyphen-suffix rule எதுவும்
+# இல்லாமல் — வெறும் UPPER+TRIM (case-insensitive exact match) மட்டும்.
+_NORM_TITLE_SIMPLE_SQL = "UPPER(TRIM(title))"
 
 
 def _norm_title(t):
     """Python-side equivalent of _NORM_TITLE_SQL — frontend இல்லாத ஒப்பீடுகளுக்கு."""
-    t = re.sub(r'\s+', ' ', (t or '').strip())
-    t = t.split('-', 1)[0].strip()
-    return t.upper()
+    t = re.sub(_QUOTE_CHARS_RE, '', (t or ''))
+    t = re.sub(r'\s+', ' ', t.strip()).upper()
+    if '-' not in t:
+        return t
+    before, _, after = t.partition('-')
+    after = after.strip()
+    if after == '' or re.search('[A-Za-z\u0B80-\u0BFF]', after):
+        return before.strip()
+    return t
 
 
 # ==========================================================
@@ -726,15 +824,28 @@ def _multi_isbn_block_message(isbns):
 @login_required
 def api_send_sets():
     year = request.args.get("year") or BASE_YEAR
+    wage_centers = _get_wage_centers_param()
     with DBConn() as (conn, cur):
-        cur.execute(
-            "SELECT set_number, COUNT(*) AS c FROM books "
-            "WHERE central_number IS NOT NULL "
-            "AND set_number IS NOT NULL AND set_number != '' "
-            f"AND {_UNSENT_SQL} AND academic_year = %s "
-            "GROUP BY set_number ORDER BY set_number",
-            (year,)
-        )
+        if wage_centers:
+            placeholders = ",".join(["%s"] * len(wage_centers))
+            cur.execute(
+                "SELECT set_number, COUNT(*) AS c FROM books "
+                "WHERE central_number IS NOT NULL "
+                "AND set_number IS NOT NULL AND set_number != '' "
+                f"AND {_UNSENT_SQL} AND academic_year = %s "
+                f"AND TRIM(state_acc_number_1) IN ({placeholders}) "
+                "GROUP BY set_number ORDER BY set_number",
+                (year, *wage_centers)
+            )
+        else:
+            cur.execute(
+                "SELECT set_number, COUNT(*) AS c FROM books "
+                "WHERE central_number IS NOT NULL "
+                "AND set_number IS NOT NULL AND set_number != '' "
+                f"AND {_UNSENT_SQL} AND academic_year = %s "
+                "GROUP BY set_number ORDER BY set_number",
+                (year,)
+            )
         rows = cur.fetchall()
     return jsonify([{"set": r["set_number"], "count": r["c"]} for r in rows])
 
@@ -744,22 +855,44 @@ def api_send_sets():
 def api_send_libraries():
     set_number = request.args.get("set", "")
     year = request.args.get("year") or BASE_YEAR
+    wage_centers = _get_wage_centers_param()
     with DBConn() as (conn, cur):
-        cur.execute(
-            "SELECT library_name_tm, COUNT(*) AS c FROM books "
-            "WHERE set_number = %s AND central_number IS NOT NULL "
-            f"AND {_UNSENT_SQL} AND academic_year = %s "
-            "GROUP BY library_name_tm ORDER BY library_name_tm",
-            (set_number, year)
-        )
-        rows = cur.fetchall()
-        cur.execute(
-            "SELECT COUNT(*) AS c FROM books "
-            "WHERE set_number = %s AND central_number IS NOT NULL "
-            f"AND {_UNSENT_SQL} AND academic_year = %s",
-            (set_number, year)
-        )
-        total = cur.fetchone()["c"]
+        if wage_centers:
+            placeholders = ",".join(["%s"] * len(wage_centers))
+            cur.execute(
+                "SELECT library_name_tm, MIN(library_type) AS library_type, COUNT(*) AS c FROM books "
+                "WHERE set_number = %s AND central_number IS NOT NULL "
+                f"AND {_UNSENT_SQL} AND academic_year = %s "
+                f"AND TRIM(state_acc_number_1) IN ({placeholders}) "
+                "GROUP BY library_name_tm",
+                (set_number, year, *wage_centers)
+            )
+            rows = cur.fetchall()
+            rows.sort(key=lambda r: (_lib_type_rank(r["library_type"]), r["library_name_tm"] or ""))
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM books "
+                "WHERE set_number = %s AND central_number IS NOT NULL "
+                f"AND {_UNSENT_SQL} AND academic_year = %s "
+                f"AND TRIM(state_acc_number_1) IN ({placeholders})",
+                (set_number, year, *wage_centers)
+            )
+            total = cur.fetchone()["c"]
+        else:
+            cur.execute(
+                "SELECT library_name_tm, COUNT(*) AS c FROM books "
+                "WHERE set_number = %s AND central_number IS NOT NULL "
+                f"AND {_UNSENT_SQL} AND academic_year = %s "
+                "GROUP BY library_name_tm ORDER BY library_name_tm",
+                (set_number, year)
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM books "
+                "WHERE set_number = %s AND central_number IS NOT NULL "
+                f"AND {_UNSENT_SQL} AND academic_year = %s",
+                (set_number, year)
+            )
+            total = cur.fetchone()["c"]
     return jsonify({
         "libraries": [{"lib": r["library_name_tm"], "count": r["c"]} for r in rows],
         "total": total
@@ -992,7 +1125,7 @@ def api_renumber_branch_library_list():
     """150 நூலகங்களையும் pagination-உடன் திருப்பும் (10/பக்கம், 15 பக்கங்கள்), தேர்ந்தெடுத்த ஆண்டுக்கு மட்டும்."""
     try:
         page = max(1, int(request.args.get("page", 1)))
-        page_size = max(1, min(100, int(request.args.get("page_size", 10))))
+        page_size = max(1, min(2000, int(request.args.get("page_size", 10))))
     except Exception:
         page, page_size = 1, 10
     year = request.args.get("year") or BASE_YEAR
@@ -1136,6 +1269,9 @@ def api_backups_list():
 def api_backups_restore():
     data = request.json or {}
     filename = data.get("filename") or data.get("id")
+    password = data.get("password") or ""
+    if not _verify_admin_password(password):
+        return jsonify({"error": "தவறான password"}), 403
     if not filename:
         return jsonify({"error": "backup தேர்வு செய்யவும்"}), 400
     with DBConn() as (conn, cur):
@@ -1172,6 +1308,290 @@ def api_backups_restore():
 
 
 # ==========================================================
+# MASTER DATA CLEAR — Admin மட்டும், password கட்டாயம்.
+# தேர்ந்தெடுக்கப்பட்ட ஆண்டுக்கு மட்டும் books/counters/reclaimed_central/
+# reclaimed_branch/அந்த ஆண்டுக்குரிய renumber backups அழிக்கப்படும் — மற்ற
+# ஆண்டுகளின் தரவு பாதிக்கப்படாது. இதன் பின் migrate_excel_to_db.py /
+# load_academic_year.py மூலம் cmd prompt-ல் இருந்து புதிதாக ஏற்றலாம்.
+# users/settings (login, passwords, active year) தொடப்படாது.
+# ==========================================================
+@app.route("/api/admin/master_data/clear", methods=["POST"])
+@admin_required
+def api_master_data_clear():
+    data = request.json or {}
+    password = data.get("password") or ""
+    year = (data.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not _verify_admin_password(password):
+        return jsonify({"error": "தவறான password"}), 403
+
+    central_ckey = _counter_key("central_number", year)
+    with DBConn() as (conn, cur):
+        cur.execute("DELETE FROM books WHERE academic_year=%s", (year,))
+        book_count = cur.rowcount
+
+        cur.execute("DELETE FROM reclaimed_central WHERE academic_year=%s", (year,))
+        cur.execute("DELETE FROM reclaimed_branch WHERE academic_year=%s", (year,))
+
+        cur.execute("DELETE FROM counters WHERE key=%s", (central_ckey,))
+        if year == BASE_YEAR:
+            cur.execute("DELETE FROM counters WHERE key LIKE 'branch:%' AND key NOT LIKE 'branch:%:%'")
+        else:
+            cur.execute("DELETE FROM counters WHERE key LIKE %s", (f"branch:%:{year}",))
+
+        # இந்த ஆண்டுக்குரிய renumber backups (central/branch) மட்டும் நீக்கு —
+        # பிற ஆண்டுகளின் backups தொடப்படாது.
+        cur.execute(
+            "DELETE FROM backups WHERE "
+            "(data->>'type' = 'central' AND data->>'counter_key' = %s) "
+            "OR (data->>'type' = 'branch' AND data->>'counter_key' LIKE %s)",
+            (central_ckey, f"%:{year}")
+        )
+
+    # in-memory fuzzy-title cache-ம் இந்த ஆண்டுக்கு பழைய தரவை சுட்டிக்காட்டும் என்பதால் அழி
+    _fuzzy_cache.pop(year, None)
+    _fuzzy_cache_status.pop(year, None)
+    _fuzzy_cache_progress.pop(year, None)
+
+    return jsonify({
+        "success": True,
+        "message": f"{year} ஆண்டுக்கான Master Data முழுவதும் அழிக்கப்பட்டது ({book_count} பதிவுகள் நீக்கப்பட்டன). "
+                   "மற்ற ஆண்டுகளின் தரவு பாதிக்கப்படவில்லை. இப்போது இந்த ஆண்டுக்கு cmd prompt மூலம் "
+                   "(migrate_excel_to_db.py அல்லது load_academic_year.py பயன்படுத்தி) புதிதாக தரவு ஏற்றலாம்."
+    })
+
+
+# ==========================================================
+# MASTER PUBLISHER CLEAR — Admin மட்டும், password கட்டாயம்.
+# தேர்ந்தெடுக்கப்பட்ட ஆண்டில், தேர்ந்தெடுக்கப்பட்ட பதிப்பகத்திற்கு (vendor_name)
+# சொந்தமான அனைத்து புத்தகங்களையும் master data-ல் இருந்து முழுமையாக நீக்கும்.
+# மற்ற பதிப்பகங்கள் / மற்ற ஆண்டுகள் பாதிக்கப்படாது. ஏற்கனவே central_number /
+# branch_number கொடுக்கப்பட்டிருந்தாலும், அந்த எண்கள் reclaim pool-க்கு
+# அனுப்பப்படாமல் நேரடியாக நீக்கப்படும் (எண்கள் மீண்டும் பயன்படுத்தப்படாது).
+# ==========================================================
+@app.route("/api/admin/master_publisher_clear/count")
+@admin_required
+def api_master_publisher_clear_count():
+    vendor = (request.args.get("vendor") or "").strip()
+    year = (request.args.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not vendor:
+        return jsonify({"error": "பதிப்பகம் கொடுக்கப்படவில்லை"}), 400
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM books WHERE TRIM(vendor_name)=%s AND academic_year=%s",
+            (vendor, year)
+        )
+        count = cur.fetchone()["c"]
+    return jsonify({"vendor": vendor, "year": year, "count": count})
+
+
+@app.route("/api/admin/master_publisher_clear", methods=["POST"])
+@admin_required
+def api_master_publisher_clear():
+    data = request.json or {}
+    vendor = (data.get("vendor") or "").strip()
+    password = data.get("password") or ""
+    year = (data.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not vendor:
+        return jsonify({"error": "பதிப்பகம் கொடுக்கப்படவில்லை"}), 400
+    if not _verify_admin_password(password):
+        return jsonify({"error": "தவறான password"}), 403
+
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "DELETE FROM books WHERE TRIM(vendor_name)=%s AND academic_year=%s",
+            (vendor, year)
+        )
+        book_count = cur.rowcount
+
+    if book_count == 0:
+        return jsonify({"error": f'"{vendor}" பதிப்பகத்திற்கு {year} ஆண்டில் புத்தகங்கள் இல்லை'}), 400
+
+    return jsonify({
+        "success": True,
+        "message": f'"{vendor}" பதிப்பகத்தின் {year} ஆண்டுக்குரிய {book_count} புத்தகங்களும் '
+                   "master data-ல் இருந்து நீக்கப்பட்டன. மற்ற பதிப்பகங்கள் / ஆண்டுகள் பாதிக்கப்படவில்லை."
+    })
+
+
+# ==========================================================
+# MASTER TITLE CHANGE — Admin மட்டும், password கட்டாயம்.
+# தேர்ந்தெடுக்கப்பட்ட ஆண்டில், தேர்ந்தெடுக்கப்பட்ட (exact) தலைப்பு + பதிப்பகம்
+# இணைவில் உள்ள அனைத்து பிரதிகளின் (10 பிரதிகள் இருந்தாலும் 10-ம்) தலைப்பையும்
+# ஒரே நேரத்தில் புதிய தலைப்புக்கு மாற்றும். ஒரே தலைப்பை வெவ்வேறு பதிப்பகங்கள்
+# கொடுத்திருந்தால், பதிப்பகத்தை தேர்ந்தெடுத்த பின்னரே மாற்றம் நடக்கும் —
+# மற்ற பதிப்பகங்களின் அதே தலைப்பு பாதிக்கப்படாது.
+# ==========================================================
+@app.route("/api/title_vendors")
+@admin_required
+def api_title_vendors():
+    """தேர்ந்தெடுத்த தலைப்பில் (exact), எந்தெந்த பதிப்பகங்கள் (vendor_name)
+    புத்தகங்களை கொடுத்துள்ளன என்பதன் பட்டியலை, ஒவ்வொன்றின் பிரதிகள்
+    எண்ணிக்கையுடன் திரும்பும்."""
+    title = (request.args.get("title") or "").strip()
+    year = (request.args.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not title:
+        return jsonify({"error": "தலைப்பு கொடுக்கப்படவில்லை"}), 400
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT COALESCE(NULLIF(TRIM(vendor_name), ''), '(பதிப்பகம் இல்லை)') AS vendor_name, COUNT(*) AS c "
+            "FROM books WHERE TRIM(title)=%s AND academic_year=%s "
+            "GROUP BY 1 ORDER BY 1",
+            (title, year)
+        )
+        rows = cur.fetchall()
+    return jsonify([{"vendor_name": r["vendor_name"], "count": r["c"]} for r in rows])
+
+
+@app.route("/api/admin/master_title_change/count")
+@admin_required
+def api_master_title_change_count():
+    title = (request.args.get("title") or "").strip()
+    vendor = (request.args.get("vendor") or "").strip()
+    book_id = (request.args.get("book_id") or "").strip()
+    year = (request.args.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not title:
+        return jsonify({"error": "தலைப்பு கொடுக்கப்படவில்லை"}), 400
+    if not vendor:
+        return jsonify({"error": "பதிப்பகம் கொடுக்கப்படவில்லை"}), 400
+
+    no_vendor = (vendor == "(பதிப்பகம் இல்லை)")
+    with DBConn() as (conn, cur):
+        # ஒரே title+vendor+year குழுவில் Book Id வாரியாக பிரிக்கப்பட்ட எண்ணிக்கை.
+        # ஒரே title+publisher-ல் வெவ்வேறு Book Id (விலை variant) இருந்தால், அவை
+        # தனித்தனியாகவே காட்டப்பட வேண்டும் — சேர்த்து காட்டக்கூடாது.
+        base_where = "TRIM(title)=%s AND academic_year=%s AND (vendor_name IS NULL OR TRIM(vendor_name) = '')" if no_vendor \
+            else "TRIM(title)=%s AND TRIM(vendor_name)=%s AND academic_year=%s"
+        base_params = (title, year) if no_vendor else (title, vendor, year)
+
+        cur.execute(
+            f"SELECT COALESCE(NULLIF(TRIM(book_id), ''), NULL) AS bid, COUNT(*) AS c "
+            f"FROM books WHERE {base_where} GROUP BY 1 ORDER BY 1 NULLS LAST",
+            base_params
+        )
+        rows = cur.fetchall()
+        book_ids = [{"book_id": r["bid"], "count": r["c"]} for r in rows]
+        total_count = sum(r["c"] for r in rows)
+
+        if book_id:
+            # ஒரு குறிப்பிட்ட Book Id தேர்ந்தெடுக்கப்பட்டிருந்தால், அதற்குரிய எண்ணிக்கை மட்டும்.
+            cur.execute(
+                f"SELECT COUNT(*) AS c FROM books WHERE {base_where} AND TRIM(book_id)=%s",
+                base_params + (book_id,)
+            )
+            count = cur.fetchone()["c"]
+        elif len(book_ids) <= 1:
+            count = total_count
+        else:
+            count = None  # Admin இன்னும் Book Id தேர்ந்தெடுக்கவில்லை
+
+    return jsonify({
+        "title": title, "vendor": vendor, "year": year,
+        "count": count, "total_count": total_count, "book_ids": book_ids
+    })
+
+
+@app.route("/api/admin/master_title_change", methods=["POST"])
+@admin_required
+def api_master_title_change():
+    data = request.json or {}
+    old_title = (data.get("old_title") or "").strip()
+    vendor = (data.get("vendor") or "").strip()
+    book_id = (data.get("book_id") or "").strip()
+    new_title = (data.get("new_title") or "").strip()
+    password = data.get("password") or ""
+    year = (data.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not old_title:
+        return jsonify({"error": "தற்போதைய தலைப்பு கொடுக்கப்படவில்லை"}), 400
+    if not vendor:
+        return jsonify({"error": "பதிப்பகம் கொடுக்கப்படவில்லை"}), 400
+    if not new_title:
+        return jsonify({"error": "புதிய தலைப்பு கொடுக்கப்படவில்லை"}), 400
+    if not _verify_admin_password(password):
+        return jsonify({"error": "தவறான password"}), 403
+
+    no_vendor = (vendor == "(பதிப்பகம் இல்லை)")
+    with DBConn() as (conn, cur):
+        try:
+            # ஒரே title+vendor குழுவில் ஒன்றுக்கும் மேற்பட்ட Book Id இருந்தால், Admin
+            # ஒரு Book Id-ஐ தேர்ந்தெடுத்திருக்க வேண்டும் — இல்லையெனில் தடுக்கப்படும்
+            # (அனைத்து Book Id-களும் சேர்த்து தவறாக update ஆகாமல் இருக்க).
+            base_where = "TRIM(title)=%s AND academic_year=%s AND (vendor_name IS NULL OR TRIM(vendor_name) = '')" if no_vendor \
+                else "TRIM(title)=%s AND TRIM(vendor_name)=%s AND academic_year=%s"
+            base_params = (old_title, year) if no_vendor else (old_title, vendor, year)
+
+            if not book_id:
+                cur.execute(f"SELECT COUNT(DISTINCT NULLIF(TRIM(book_id), '')) AS c FROM books WHERE {base_where}", base_params)
+                distinct_book_ids = cur.fetchone()["c"]
+                if distinct_book_ids > 1:
+                    conn.rollback()
+                    return jsonify({"error": "இந்த தலைப்பில் ஒன்றுக்கும் மேற்பட்ட Book Id உள்ளது — எந்த Book Id-க்கு மாற்ற வேண்டும் என தேர்ந்தெடுக்கவும்"}), 400
+                cur.execute(f"UPDATE books SET title=%s WHERE {base_where}", (new_title,) + base_params)
+            else:
+                cur.execute(f"UPDATE books SET title=%s WHERE {base_where} AND TRIM(book_id)=%s", (new_title,) + base_params + (book_id,))
+            updated = cur.rowcount
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": f"பிழை: {e}"}), 500
+
+    if updated == 0:
+        return jsonify({"error": f'"{old_title}" தலைப்பில் ({vendor}) {year} ஆண்டில் புத்தகங்கள் இல்லை'}), 400
+
+    bid_note = f' (Book Id: {book_id})' if book_id else ''
+    return jsonify({
+        "success": True,
+        "message": f'"{old_title}" தலைப்பில் ({vendor}){bid_note} உள்ள {year} ஆண்டுக்குரிய {updated} பிரதிகளும் '
+                   f'"{new_title}" எனப் புதுப்பிக்கப்பட்டன. மற்ற Book Id / பதிப்பகங்களின் அதே தலைப்பு பாதிக்கப்படவில்லை.'
+    })
+
+
+# ==========================================================
+# MASTER ASSIGNING DATA CLEAR — Admin மட்டும், password கட்டாயம்.
+# கொடுக்கப்பட்ட ஆண்டுக்கு இதுவரை 'பிரிக்க'(assign)/'அனுப்பு'(send) செய்யப்பட்ட
+# அனைத்தையும் அழித்து, புத்தகங்களை மீண்டும் unassigned நிலைக்கு கொண்டுவரும்.
+# "தவறான பதிவு நீக்கம்" (Reclaim) போலல்லாமல் — விடுவிக்கப்படும் central/branch
+# எண்கள் reclaim pool-க்கு அனுப்பப்படாது; மாறாக அந்த ஆண்டுக்கான pool
+# (reclaimed_central/reclaimed_branch, ஏற்கனவே ஏதேனும் இருந்தாலும்) மற்றும்
+# counters முழுவதுமாக அழிக்கப்பட்டு, அடுத்த பிரிப்பு 1-ல் இருந்தே புதிதாக தொடங்கும்.
+# ==========================================================
+@app.route("/api/admin/master_data/assign_clear", methods=["POST"])
+@admin_required
+def api_master_data_assign_clear():
+    data = request.json or {}
+    password = data.get("password") or ""
+    year = (data.get("year") or _get_setting("active_academic_year", BASE_YEAR) or BASE_YEAR).strip()
+    if not _verify_admin_password(password):
+        return jsonify({"error": "தவறான password"}), 403
+
+    central_ckey = _counter_key("central_number", year)
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "UPDATE books SET set_number=NULL, central_number=NULL, branch_number=NULL, "
+            "work_status=NULL, sent_details=NULL, date=NULL, locked_by=NULL, locked_at=NULL "
+            "WHERE academic_year=%s",
+            (year,)
+        )
+        cleared_books = cur.rowcount
+
+        cur.execute("DELETE FROM reclaimed_central WHERE academic_year=%s", (year,))
+        cur.execute("DELETE FROM reclaimed_branch WHERE academic_year=%s", (year,))
+
+        cur.execute("DELETE FROM counters WHERE key=%s", (central_ckey,))
+        if year == BASE_YEAR:
+            cur.execute("DELETE FROM counters WHERE key LIKE 'branch:%' AND key NOT LIKE 'branch:%:%'")
+        else:
+            cur.execute("DELETE FROM counters WHERE key LIKE %s", (f"branch:%:{year}",))
+
+    return jsonify({
+        "success": True,
+        "message": f"{year} ஆண்டுக்கான assign/send தரவு முழுவதும் அழிக்கப்பட்டது "
+                   f"({cleared_books} புத்தகங்கள் மீண்டும் 'பிரிக்க' நிலைக்கு வந்தன). "
+                   "Central Number / Branch Number spool-ம் காலி செய்யப்பட்டது — "
+                   "அடுத்த பிரிப்பு 1-ல் இருந்தே புதிதாக தொடங்கும்."
+    })
+
+
+# ==========================================================
 # EXCEL பதிவிறக்கம் — Admin மட்டும் (staff/librarian-க்கு அனுமதி இல்லை)
 #   type=assigned       → பிரிக்க மட்டும் செய்த (இன்னும் அனுப்பாத) நூல்கள்
 #   type=assigned_sent  → பிரிக்க + அனுப்ப இரண்டும் முடிந்த நூல்கள்
@@ -1204,6 +1624,23 @@ _EXCEL_COLUMNS = [
     ("accepted_price", "ACCEPTED PRICE"),
     ("state_acc_number_1", "STATE ACCESSIONNUMBER.1"),
     ("work_status", "WORK_STATUS"),
+]
+
+# ==========================================================
+# மாநிலப் பதிவெண் (state_acc_number) மட்டும் Bulk Update செய்ய —
+# Download template-ல் ID கட்டாயம் இருக்க வேண்டும் (Upload-ல் இதை
+# வைத்தே UPDATE செய்யப்படும், புதிய rows INSERT ஆகாது).
+# பிரித்த/பிரிக்காத அனைத்து புத்தகங்களும் இதில் இடம்பெறும்.
+# ==========================================================
+_STATE_ACC_TEMPLATE_COLUMNS = [
+    ("id", "ID"),
+    ("state_acc_number", "STATE ACCESSION NUMBER"),
+    ("title", "TITLE"),
+    ("author", "AUTHOR"),
+    ("vendor_name", "VENDOR_NAME"),
+    ("library_name_tm", "LIBRARY_NAME_TM"),
+    ("central_number", "CENTRAL_NUMBER"),
+    ("branch_number", "BRANCH_NUMBER"),
 ]
 
 
@@ -1308,10 +1745,90 @@ def api_admin_upload_excel():
     })
 
 
+# ==========================================================
+# மாநிலப் பதிவெண் (state_acc_number) Bulk UPDATE — Admin மட்டும்.
+# "மாநிலப் பதிவெண் Template" Excel-ஐ (ID + STATE ACCESSION NUMBER)
+# அப்லோட் செய்தால், ID வைத்து UPDATE மட்டும் செய்யப்படும் — புதிய
+# rows INSERT ஆகாது, duplicate வராது. காலியான rows தவிர்க்கப்படும்.
+# ==========================================================
+@app.route("/api/admin/upload_state_acc_update", methods=["POST"])
+@admin_required
+def api_admin_upload_state_acc_update():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Excel கோப்பு தேர்ந்தெடுக்கவும்"}), 400
+
+    try:
+        df = pd.read_excel(f)
+    except Exception as e:
+        return jsonify({"error": f"Excel படிக்க முடியவில்லை: {e}"}), 400
+
+    df = df.rename(columns={c: str(c).strip().upper() for c in df.columns})
+
+    id_col = "ID" if "ID" in df.columns else None
+    state_col = None
+    for cand in ("STATE ACCESSION NUMBER", "STATE_ACC_NUMBER", "STATE ACC NUMBER", "STATE ACC"):
+        if cand in df.columns:
+            state_col = cand
+            break
+
+    if not id_col or not state_col:
+        return jsonify({"error": "Excel-ல் 'ID' மற்றும் 'STATE ACCESSION NUMBER' column-கள் கட்டாயம் இருக்க வேண்டும் — 'மாநிலப் பதிவெண் Template' Download செய்து அதையே பயன்படுத்தவும்."}), 400
+
+    updates = []
+    skipped_blank = 0
+    skipped_bad_id = 0
+    for i in range(len(df)):
+        row = df.iloc[i]
+        raw_id = row.get(id_col)
+        raw_val = row.get(state_col)
+        if pd.isna(raw_id):
+            continue
+        try:
+            book_id = int(float(raw_id))
+        except Exception:
+            skipped_bad_id += 1
+            continue
+        if pd.isna(raw_val) or str(raw_val).strip() == "":
+            skipped_blank += 1
+            continue
+        updates.append((book_id, str(raw_val).strip()))
+
+    if not updates:
+        return jsonify({"error": "புதுப்பிக்க தகுதியான rows எதுவும் இல்லை — 'STATE ACCESSION NUMBER' column காலியாக உள்ளது"}), 400
+
+    updated = 0
+    CHUNK = 2000
+    with DBConn() as (conn, cur):
+        for i in range(0, len(updates), CHUNK):
+            batch = updates[i:i + CHUNK]
+            values_str = ",".join(
+                cur.mogrify("(%s,%s)", r).decode("utf-8") for r in batch
+            )
+            cur.execute(
+                "UPDATE books AS b SET state_acc_number = v.val "
+                f"FROM (VALUES {values_str}) AS v(id, val) "
+                "WHERE b.id = v.id"
+            )
+            updated += cur.rowcount
+
+    msg = f"{updated:,} புத்தகங்களுக்கு மாநிலப் பதிவெண் புதுப்பிக்கப்பட்டது."
+    extra = []
+    if skipped_blank:
+        extra.append(f"{skipped_blank:,} rows காலியாக இருந்ததால் தவிர்க்கப்பட்டன")
+    if skipped_bad_id:
+        extra.append(f"{skipped_bad_id:,} rows-ல் தவறான ID இருந்ததால் தவிர்க்கப்பட்டன")
+    if extra:
+        msg += " (" + ", ".join(extra) + ")"
+
+    return jsonify({"success": True, "updated": updated, "skipped_blank": skipped_blank,
+                     "skipped_bad_id": skipped_bad_id, "message": msg})
+
+
 _excel_export_jobs = {}   # (dtype, year) -> {"status": running|done|error, "path": str, "fname": str, "error": str}
 
 
-def _build_excel_export_job(app_ctx, dtype, year, where, fname_prefix):
+def _build_excel_export_job(app_ctx, dtype, year, where, fname_prefix, columns=None):
     key = (dtype, year)
     _excel_export_jobs[key] = {"status": "running"}
     try:
@@ -1327,9 +1844,12 @@ def _build_excel_export_job(app_ctx, dtype, year, where, fname_prefix):
                     return ILLEGAL_CHARACTERS_RE.sub('', v)
                 return v
 
-            db_col_names = [c for c, _ in _EXCEL_COLUMNS]
-            db_cols = ", ".join(db_col_names)
-            excel_headers = [h for _, h in _EXCEL_COLUMNS]
+            cols = columns or _EXCEL_COLUMNS
+            db_col_names = [c for c, _ in cols]
+            # id பாஜினேஷனுக்கு கட்டாயம் தேவை — column list-ல் ஏற்கனவே இல்லையென்றால் தனியாக சேர்க்கவும்
+            select_cols = db_col_names if "id" in db_col_names else (["id"] + db_col_names)
+            db_cols = ", ".join(select_cols)
+            excel_headers = [h for _, h in cols]
 
             wb = Workbook(write_only=True)
             ws = wb.create_sheet("Data")
@@ -1342,7 +1862,7 @@ def _build_excel_export_job(app_ctx, dtype, year, where, fname_prefix):
             with DBConn() as (conn, cur):
                 while True:
                     cur.execute(
-                        f"SELECT id, {db_cols} FROM books WHERE {where} AND id > %s "
+                        f"SELECT {db_cols} FROM books WHERE {where} AND id > %s "
                         f"ORDER BY id ASC LIMIT %s",
                         (year, last_id, CHUNK)
                     )
@@ -1370,6 +1890,9 @@ def _excel_export_where(dtype):
         return f"(set_number IS NOT NULL AND TRIM(set_number) != '') AND {_SENT_SQL} AND academic_year = %s", "assigned_and_sent"
     elif dtype == "total":
         return "academic_year = %s", "total_data"
+    elif dtype == "state_acc_template":
+        # பிரித்த/பிரிக்காத அத்தனை புத்தகங்களும் — மாநிலப் பதிவெண் Bulk Update-க்கு
+        return "academic_year = %s", "state_acc_template"
     return None, None
 
 
@@ -1386,8 +1909,9 @@ def api_admin_download_excel_start():
     status = _excel_export_jobs.get(key, {}).get("status")
     if status == "running":
         return jsonify({"status": "running"})
+    columns = _STATE_ACC_TEMPLATE_COLUMNS if dtype == "state_acc_template" else None
     # "done"/"error" state-ஐயும் மீண்டும் build செய்யும் — தரவு மாறியிருக்கலாம்
-    threading.Thread(target=_build_excel_export_job, args=(app, dtype, year, where, fname_prefix), daemon=True).start()
+    threading.Thread(target=_build_excel_export_job, args=(app, dtype, year, where, fname_prefix, columns), daemon=True).start()
     return jsonify({"status": "running"})
 
 
@@ -1421,37 +1945,215 @@ def api_admin_download_excel_file():
 
 
 # ==========================================================
-# REPORTS — HTML அறிக்கை உருவாக்கி DB-ல் சேமிக்கப்பட்டு, Frontend அதை
-# புதிய tab-ல் திறக்கும் (பயனர் Ctrl+P → Save as PDF செய்யலாம்)
+# REPORTS — HTML அறிக்கை server memory-ல் தற்காலிகமா (in-memory, DB-ல்
+# இல்லை) வெச்சு, Frontend அதை புதிய tab-ல் திறக்கும் (பயனர் Ctrl+P →
+# Save as PDF செய்யலாம்). Neon storage-ஐ சேமிக்க DB-ல் இனி save ஆகாது;
+# ஒரு குறிப்பிட்ட நேரத்துக்கு (REPORT_TTL_SECONDS) மேல் தானாகவே அழிந்துவிடும்.
 # ==========================================================
+_reports_cache = {}
+_reports_cache_lock = threading.Lock()
+_report_id_counter = itertools.count(1)
+REPORT_TTL_SECONDS = 2 * 60 * 60  # 2 மணி நேரம் — அதுக்குள் பார்த்துக்கணும்
+
+
+def _cleanup_old_reports():
+    cutoff = time.time() - REPORT_TTL_SECONDS
+    expired = [rid for rid, r in _reports_cache.items() if r["created_at"] < cutoff]
+    for rid in expired:
+        _reports_cache.pop(rid, None)
+
+
 def _save_report(html, title):
-    with DBConn() as (conn, cur):
-        cur.execute(
-            "INSERT INTO generated_reports (title, html) VALUES (%s, %s) RETURNING id",
-            (title, html)
-        )
-        rid = cur.fetchone()["id"]
+    with _reports_cache_lock:
+        _cleanup_old_reports()
+        rid = next(_report_id_counter)
+        _reports_cache[rid] = {"html": html, "title": title, "created_at": time.time()}
     return rid
 
 
 @app.route("/reports/view/<int:report_id>")
 @login_required
 def view_report(report_id):
-    with DBConn() as (conn, cur):
-        cur.execute("SELECT html FROM generated_reports WHERE id=%s", (report_id,))
-        row = cur.fetchone()
+    with _reports_cache_lock:
+        row = _reports_cache.get(report_id)
     if not row:
-        return "அறிக்கை கிடைக்கவில்லை", 404
+        return "அறிக்கை கிடைக்கவில்லை (அல்லது 2 மணி நேரம் கடந்து காலாவதியானது — மீண்டும் generate செய்யவும்)", 404
     return row["html"]
 
 
-@app.route("/api/report/<int:num>")
-@login_required
-def api_report(num):
+# ==========================================================
+# அறிக்கை HTML-ஐ Excel (.xlsx) ஆக மாற்றும் generic (பொதுவான) helper
+# ==========================================================
+class _ReportError(Exception):
+    def __init__(self, message, status=200):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+from html.parser import HTMLParser as _HTMLParser
+import html as _html_lib
+
+
+class _ReportTableParser(_HTMLParser):
+    """report HTML-ல் இருக்கும் .t1..t5 தலைப்பு வரிகளையும், <table> உள் <tr>
+    வரிசைகளையும் (thead/tbody வேறுபாடு + rowspan/colspan உடன்) பிரித்தெடுக்கும்."""
+    def __init__(self):
+        super().__init__()
+        self.titles = []
+        self.rows = []  # list of (cells, is_header); cells: list of dict(text, rowspan, colspan)
+        self._in_thead = False
+        self._row = None
+        self._cell = None
+        self._title_capture = False
+        self._title_buf = ""
+
+    def handle_starttag(self, tag, attrs):
+        d = dict(attrs)
+        cls = d.get('class', '')
+        if tag == 'thead':
+            self._in_thead = True
+        elif tag == 'tr':
+            self._row = []
+        elif tag in ('td', 'th'):
+            try:
+                rs = int(d.get('rowspan', 1) or 1)
+            except ValueError:
+                rs = 1
+            try:
+                cs = int(d.get('colspan', 1) or 1)
+            except ValueError:
+                cs = 1
+            self._cell = {'text': '', 'rowspan': rs, 'colspan': cs}
+        elif tag == 'p' and cls in ('t1', 't2', 't3', 't4', 't5'):
+            self._title_capture = True
+            self._title_buf = ''
+        elif tag == 'br' and self._cell is not None:
+            self._cell['text'] += ' '
+
+    def handle_endtag(self, tag):
+        if tag == 'thead':
+            self._in_thead = False
+        elif tag in ('td', 'th') and self._cell is not None:
+            self._row.append(self._cell)
+            self._cell = None
+        elif tag == 'tr' and self._row is not None:
+            self.rows.append((self._row, self._in_thead))
+            self._row = None
+        elif tag == 'p' and self._title_capture:
+            t = _html_lib.unescape(self._title_buf).strip()
+            if t:
+                self.titles.append(t)
+            self._title_capture = False
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell['text'] += data
+        elif self._title_capture:
+            self._title_buf += data
+
+
+def _flatten_report_rows(rows):
+    """rowspan/colspan-ஐ grid ஆக விரிக்கிறது. Returns list of (dict(col->text), is_header)."""
+    grid_rows = []
+    carry = {}  # col -> [remaining_rows, text]
+    for cells, is_header in rows:
+        grid = {}
+        col = 0
+        ci = 0
+        n = len(cells)
+        while ci < n or col <= max(carry.keys(), default=-1):
+            if col in carry:
+                remaining, text = carry[col]
+                grid[col] = text
+                if remaining - 1 <= 0:
+                    del carry[col]
+                else:
+                    carry[col] = [remaining - 1, text]
+                col += 1
+                continue
+            if ci >= n:
+                break
+            c = cells[ci]
+            ci += 1
+            text = re.sub(r'\s+', ' ', _html_lib.unescape(c['text']).strip())
+            grid[col] = text
+            if c['rowspan'] > 1:
+                carry[col] = [c['rowspan'] - 1, text]
+            for extra in range(1, c['colspan']):
+                grid[col + extra] = ''
+            col += c['colspan']
+        grid_rows.append((grid, is_header))
+    return grid_rows
+
+
+def _write_report_sheet(ws, titles, grid_rows):
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+    max_col = max([max(g.keys(), default=-1) for g, _ in grid_rows] + [0]) + 1
+    r = 1
+    for t in titles:
+        ws.cell(row=r, column=1, value=t).font = Font(bold=True, size=12)
+        if max_col > 1:
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=max_col)
+        r += 1
+    if titles:
+        r += 1
+    header_fill = PatternFill(start_color="D0E8FF", end_color="D0E8FF", fill_type="solid")
+    for grid, is_header in grid_rows:
+        for c in range(max_col):
+            val = grid.get(c, '')
+            cell = ws.cell(row=r, column=c + 1, value=val)
+            if is_header:
+                cell.font = Font(bold=True)
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            else:
+                cell.alignment = Alignment(horizontal='left' if c <= 1 else 'center', vertical='center')
+        r += 1
+    for c in range(1, max_col + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 22 if c <= 2 else 14
+
+
+def _report_html_to_workbook(html_sections):
+    """html_sections: list of (sheet_title, html) — ஒரு sheet-க்கு ஒரு (title, html)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.remove(wb.active)
+    used_titles = set()
+    for sheet_title, html in html_sections:
+        st = (sheet_title or "Report")[:31] or "Report"
+        base, n = st, 2
+        while st in used_titles:
+            st = f"{base[:28]}_{n}"
+            n += 1
+        used_titles.add(st)
+        parser = _ReportTableParser()
+        parser.feed(html)
+        grid_rows = _flatten_report_rows(parser.rows)
+        ws = wb.create_sheet(title=st)
+        _write_report_sheet(ws, parser.titles, grid_rows)
+    return wb
+
+
+def _workbook_response(wb, filename):
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return send_file(
+        bio, as_attachment=True, download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+# ==========================================================
+# REPORTS — HTML அறிக்கை உருவாக்கி DB-ல் சேமிக்கப்பட்டு, Frontend அதை
+# புதிய tab-ல் திறக்கும் (பயனர் Ctrl+P → Save as PDF செய்யலாம்)
+# ==========================================================
+def _build_report_html(num, year, rtype=None):
+    """அறிக்கை HTML-ஐ உருவாக்கி string ஆக திருப்பும். data இல்லை என்றால் _ReportError raise செய்யும்."""
     today_str = datetime.now().strftime("%d/%m/%Y")
-    year = request.args.get('year') or BASE_YEAR
-    try:
-        with DBConn() as (conn, cur):
+    with DBConn() as (conn, cur):
             if num == 1:
                 cur.execute(
                     "SELECT work_status AS ws, "
@@ -1464,7 +2166,7 @@ def api_report(num):
                 )
                 rows = cur.fetchall()
                 if not rows:
-                    return jsonify({"error": "இன்னும் எந்த பணியும் பதிவு செய்யப்படவில்லை"})
+                    raise _ReportError("இன்னும் எந்த பணியும் பதிவு செய்யப்படவில்லை")
                 table_rows = "".join(
                     f"<tr><td>{i}</td><td>{r['ws']}</td><td>{r['vendor_count']}</td><td>{r['book_count']}</td></tr>"
                     for i, r in enumerate(rows, 1)
@@ -1513,14 +2215,14 @@ def api_report(num):
                     ("அனுப்ப வேண்டியது", "-", pending_send_tm, pending_send_en),
                 ]
                 tr = "".join(
-                    f"<tr><td>{i}</td><td style='text-align:left'>{l}</td><td>{vc}</td><td>{tmc}</td><td>{enc}</td></tr>"
+                    f"<tr><td>{i}</td><td style='text-align:left'>{l}</td><td>{vc}</td><td>{tmc}</td><td>{enc}</td><td>{tmc + enc}</td></tr>"
                     for i, (l, vc, tmc, enc) in enumerate(rows, 1)
                 )
                 html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 2 - {today_str}</title>
 <style>{REPORT_COMMON_HEAD}</style></head><body>
 <div class="rt"><p class="t1">மாவட்ட நூலக ஆணைக்குழு {DISTRICT_NAME}</p><p class="t2">மாவட்ட மைய நூலகம்</p>
 <p class="t3">2026-2027 புதிய நூல்கள் — மொத்த நிலை விவரம்</p><p class="t5">அறிக்கை நாள் : {today_str}</p></div>
-<table><thead><tr><th>வ.எண்</th><th>விவரம்</th><th>பதிப்பகங்கள்</th><th>தமிழ்</th><th>ஆங்கிலம்</th></tr></thead>
+<table><thead><tr><th>வ.எண்</th><th>விவரம்</th><th>பதிப்பகங்கள்</th><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th></tr></thead>
 <tbody>{tr}</tbody></table>
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
 
@@ -1542,29 +2244,29 @@ def api_report(num):
                     if r["lt"] not in lt_order:
                         lt_order.append(r["lt"])
 
-                def _split10(total, total_tm, assigned, assigned_tm, sent, sent_tm):
-                    # வரிசை: பெறப்பட்டது(த,ஆ), பிரிக்கப்பட்டது(த,ஆ), மீதம்(த,ஆ),
-                    #        அனுப்பப்பட்டது(த,ஆ), அனுப்ப வேண்டியது(த,ஆ)
+                def _split15(total, total_tm, assigned, assigned_tm, sent, sent_tm):
+                    # வரிசை: பெறப்பட்டது(த,ஆ,மொ), பிரிக்கப்பட்டது(த,ஆ,மொ), மீதம்(த,ஆ,மொ),
+                    #        அனுப்பப்பட்டது(த,ஆ,மொ), அனுப்ப வேண்டியது(த,ஆ,மொ)
                     pending, pending_tm = total - assigned, total_tm - assigned_tm
                     ps, ps_tm = assigned - sent, assigned_tm - sent_tm
                     return (
-                        total_tm, total - total_tm,
-                        assigned_tm, assigned - assigned_tm,
-                        pending_tm, pending - pending_tm,
-                        sent_tm, sent - sent_tm,
-                        ps_tm, ps - ps_tm,
+                        total_tm, total - total_tm, total,
+                        assigned_tm, assigned - assigned_tm, assigned,
+                        pending_tm, pending - pending_tm, pending,
+                        sent_tm, sent - sent_tm, sent,
+                        ps_tm, ps - ps_tm, ps,
                     )
 
-                t1_rows, g1 = [], [0] * 10
+                t1_rows, g1 = [], [0] * 15
                 for sno, lt in enumerate(lt_order, 1):
                     sub = [r for r in lib_rows if r["lt"] == lt]
-                    vals = _split10(
+                    vals = _split15(
                         sum(r["total"] for r in sub), sum(r["total_tm"] for r in sub),
                         sum(r["assigned"] for r in sub), sum(r["assigned_tm"] for r in sub),
                         sum(r["sent"] for r in sub), sum(r["sent_tm"] for r in sub),
                     )
                     t1_rows.append((sno, lt) + vals)
-                    for k in range(10):
+                    for k in range(15):
                         g1[k] += vals[k]
                 t1_html = "".join(
                     f"<tr><td>{r[0]}</td><td style='text-align:left'>{r[1]}</td>"
@@ -1575,14 +2277,14 @@ def api_report(num):
                     "<td style='text-align:left'>மொத்தம்</td>" + "".join(f"<td>{v}</td>" for v in g1) + "</tr>"
                 )
 
-                t2_html, sno2, g2 = "", 0, [0] * 10
+                t2_html, sno2, g2 = "", 0, [0] * 15
                 for lt in lt_order:
                     t2_html += (f"<tr style='background:#0d5c63;color:#fff;font-weight:800;'>"
-                                f"<td colspan='12' style='text-align:left'>▌ {lt}</td></tr>")
+                                f"<td colspan='17' style='text-align:left'>▌ {lt}</td></tr>")
                     sub = sorted([r for r in lib_rows if r["lt"] == lt], key=lambda r: r["ln"])
                     for r in sub:
                         sno2 += 1
-                        vals = _split10(r["total"], r["total_tm"], r["assigned"], r["assigned_tm"], r["sent"], r["sent_tm"])
+                        vals = _split15(r["total"], r["total_tm"], r["assigned"], r["assigned_tm"], r["sent"], r["sent_tm"])
                         for k, v in enumerate(vals):
                             g2[k] += v
                         t2_html += (
@@ -1595,14 +2297,15 @@ def api_report(num):
                 )
 
                 _rep3_thead = """<tr><th rowspan='2'>வ.எண்</th><th rowspan='2'>{name_col}</th>
-<th colspan='2'>பெறப்பட்டது</th><th colspan='2'>பிரிக்கப்பட்டது</th><th colspan='2'>மீதம்</th>
-<th colspan='2'>அனுப்பப்பட்டது</th><th colspan='2'>அனுப்ப வேண்டியது</th></tr>
-<tr><th>தமிழ்</th><th>ஆங்கிலம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th>
-<th>தமிழ்</th><th>ஆங்கிலம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th></tr>"""
+<th colspan='3'>பெறப்பட்டது</th><th colspan='3'>பிரிக்கப்பட்டது</th><th colspan='3'>மீதம்</th>
+<th colspan='3'>அனுப்பப்பட்டது</th><th colspan='3'>அனுப்ப வேண்டியது</th></tr>
+<tr><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th>
+<th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th>
+<th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th></tr>"""
 
                 html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 3 - {today_str}</title>
 <style>{REPORT_COMMON_HEAD}
-@page{{size:A4 portrait;margin:10mm 8mm 10mm 8mm;}}
+@page{{size:A4 landscape;margin:10mm 8mm 10mm 8mm;}}
 .rep3-tbl{{font-size:7.2pt;}}
 .rep3-tbl th,.rep3-tbl td{{padding:2px 3px;}}
 </style></head><body>
@@ -1615,18 +2318,28 @@ def api_report(num):
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
 
             elif num == 4:
+                if rtype == "received":
+                    filt_sql = "TRUE"
+                    heading = "2026-2027 ல் பெறப்பட்ட அனைத்து பதிப்பகங்கள் மற்றும் நூல்கள் விவரம் (பிரிக்கப்பட்டது + பிரிக்கப்படாதது)"
+                elif rtype == "split":
+                    filt_sql = f"(set_number IS NOT NULL AND TRIM(set_number) != '') AND ({_SENT_SQL})"
+                    heading = "2026-2027 ல் பிரிக்கப்பட்டு அனுப்பப்பட்ட பதிப்பகங்கள் மற்றும் நூல்கள் விவரம்"
+                else:
+                    rtype = "unsplit"
+                    filt_sql = "(set_number IS NULL OR set_number = '')"
+                    heading = "2026-2027 ல் இதுவரை பிரிக்கப்படாத பதிப்பகங்கள் மற்றும் நூல்கள் விவரம்"
                 cur.execute(f"""
                     SELECT COALESCE(NULLIF(TRIM(vendor_name),''), 'தெரியாத பதிப்பகம்') AS vendor,
                            COUNT(DISTINCT TRIM(title)) AS title_count,
                            COUNT(DISTINCT TRIM(title)) FILTER (WHERE {_TAMIL_TITLE_SQL}) AS title_count_tm,
                            COUNT(*) AS copy_count,
                            COUNT(*) FILTER (WHERE {_TAMIL_TITLE_SQL}) AS copy_count_tm
-                    FROM books WHERE (set_number IS NULL OR set_number = '') AND academic_year = %s
+                    FROM books WHERE ({filt_sql}) AND academic_year = %s
                     GROUP BY vendor ORDER BY vendor
                 """, (year,))
                 rows = cur.fetchall()
                 if not rows:
-                    return jsonify({"error": "பிரிக்கப்படாத புத்தகங்கள் எதுவும் இல்லை"})
+                    raise _ReportError("இந்த வகையில் புத்தகங்கள் எதுவும் இல்லை")
                 rows_html, tt_tm, tt_en, tc_tm, tc_en = "", 0, 0, 0, 0
                 for i, r in enumerate(rows, 1):
                     title_tm = r["title_count_tm"]
@@ -1634,23 +2347,24 @@ def api_report(num):
                     copy_tm = r["copy_count_tm"]
                     copy_en = r["copy_count"] - copy_tm
                     rows_html += (f"<tr><td>{i}</td><td style='text-align:left'>{r['vendor']}</td>"
-                                  f"<td>{title_tm}</td><td>{title_en}</td>"
-                                  f"<td>{copy_tm}</td><td>{copy_en}</td></tr>")
+                                  f"<td>{title_tm}</td><td>{title_en}</td><td>{title_tm + title_en}</td>"
+                                  f"<td>{copy_tm}</td><td>{copy_en}</td><td>{copy_tm + copy_en}</td></tr>")
                     tt_tm += title_tm
                     tt_en += title_en
                     tc_tm += copy_tm
                     tc_en += copy_en
                 rows_html += (f"<tr style='background:#d0e8ff;font-weight:800;'><td></td>"
                               f"<td style='text-align:left'>மொத்தம்</td>"
-                              f"<td>{tt_tm}</td><td>{tt_en}</td><td>{tc_tm}</td><td>{tc_en}</td></tr>")
+                              f"<td>{tt_tm}</td><td>{tt_en}</td><td>{tt_tm + tt_en}</td>"
+                              f"<td>{tc_tm}</td><td>{tc_en}</td><td>{tc_tm + tc_en}</td></tr>")
                 html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 4 - {today_str}</title>
 <style>{REPORT_COMMON_HEAD}</style></head><body>
 <div class="rt"><p class="t1">மாவட்ட மைய நூலகம், {DISTRICT_NAME}</p>
-<p class="t3">2026-2027 ல் இதுவரை பிரிக்கப்படாத பதிப்பகங்கள் மற்றும் நூல்கள் விவரம்</p>
+<p class="t3">{heading}</p>
 <p class="t5">அறிக்கை நாள் : {today_str}</p></div>
 <table><thead><tr><th rowspan='2'>வ.எண்</th><th rowspan='2'>பதிப்பகம் பெயர்</th>
-<th colspan='2'>மொத்த தலைப்புகள்</th><th colspan='2'>மொத்தப் படிகள்</th></tr>
-<tr><th>தமிழ்</th><th>ஆங்கிலம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th></tr></thead>
+<th colspan='3'>மொத்த தலைப்புகள்</th><th colspan='3'>மொத்தப் படிகள்</th></tr>
+<tr><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th><th>தமிழ்</th><th>ஆங்கிலம்</th><th>மொத்தம்</th></tr></thead>
 <tbody>{rows_html}</tbody></table>
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
             elif num == 8:
@@ -1668,7 +2382,7 @@ def api_report(num):
                 multi_price_norm_titles = {r["norm_title"] for r in cur.fetchall()}
 
                 if not multi_price_norm_titles:
-                    return jsonify({"error": "அனுப்பப்பட்ட புத்தகங்களில் ஒரே தலைப்பில் வேறு வேறு விலைகள் எதுவும் இல்லை"})
+                    raise _ReportError("அனுப்பப்பட்ட புத்தகங்களில் ஒரே தலைப்பில் வேறு வேறு விலைகள் எதுவும் இல்லை")
 
                 cur.execute(f"""
                     SELECT {_NORM_TITLE_SQL} AS norm_title,
@@ -1721,17 +2435,388 @@ def api_report(num):
 <tbody>{body_rows}</tbody></table>
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
 
-            else:
-                return jsonify({"error": "இந்த அறிக்கை இன்னும் தயார் இல்லை (அடுத்த கட்டத்தில் வரும்)"}), 400
+            elif num == 9:
+                # ஒரு நூலகத்திற்குள் ஒரே தலைப்பில் 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் —
+                # தலைப்பு ஒப்பீடு _NORM_TITLE_SQL பயன்படுத்துகிறது (quote/space/case
+                # புறக்கணிப்பு + ஹைபனுக்குப் பின் தமிழ் இல்லாத identity suffix
+                # புறக்கணிப்பு — multi-price feature-ல் உள்ள அதே normalization).
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SQL} AS norm_ttl
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s
+                    GROUP BY lib, norm_ttl
+                    HAVING COUNT(*) >= 2
+                """, (year,))
+                dup_pairs = {(r["lib"], r["norm_ttl"]) for r in cur.fetchall()}
 
-        report_id = _save_report(html, f"அறிக்கை {num} - {today_str}")
-        return jsonify({
-            "success": True,
-            "message": f"அறிக்கை {num} புதிய tab-ல் திறக்கப்படும்.\nPDF-ஆக சேமிக்க: Ctrl+P → Save as PDF",
-            "url": f"/reports/view/{report_id}"
-        })
+                if not dup_pairs:
+                    raise _ReportError("எந்த நூலகத்திலும் ஒரே தலைப்பில் 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் உள்ள நூல்கள் இல்லை")
+
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SQL} AS norm_ttl,
+                           title, author, vendor_name, state_acc_number, central_number, branch_number,
+                           year_pub, price
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s
+                    ORDER BY lib, norm_ttl, central_number NULLS LAST, branch_number NULLS LAST
+                """, (year,))
+                all_rows = [r for r in cur.fetchall() if (r["lib"], r["norm_ttl"]) in dup_pairs]
+
+                lib_groups = {}
+                for r in all_rows:
+                    # display-க்கு அந்த group-ல் முதலில் வந்த title-ஐ பயன்படுத்துகிறோம்
+                    lib_groups.setdefault(r["lib"], {}).setdefault(r["norm_ttl"], {"title": r["title"], "rows": []})
+                    lib_groups[r["lib"]][r["norm_ttl"]]["rows"].append(r)
+
+                body_rows, sno_lib, total_titles, total_copies = "", 0, 0, 0
+                for lib in sorted(lib_groups.keys()):
+                    titles_map = lib_groups[lib]
+                    sno_lib += 1
+                    body_rows += (
+                        f"<tr style='background:#0d5c63;color:#fff;font-weight:800;'>"
+                        f"<td colspan='9' style='text-align:left'>▌ {sno_lib}. {lib} — {len(titles_map)} தலைப்புகளில் நகல் பிரதிகள்</td></tr>"
+                    )
+                    for sno_title, (norm_ttl, group) in enumerate(titles_map.items(), 1):
+                        rows = group["rows"]
+                        display_title = group["title"]
+                        total_titles += 1
+                        total_copies += len(rows)
+                        rowspan = len(rows)
+                        distinct_prices = {r.get('price') for r in rows}
+                        same_price = len(distinct_prices) == 1
+                        row_style = " style='background:#d1fae5;'" if same_price else ""
+                        badge = " <span style='background:#059669;color:#fff;font-size:0.75em;padding:1px 6px;border-radius:8px;'>ஒரே விலை</span>" if same_price else ""
+                        for i, r in enumerate(rows, 1):
+                            common = (
+                                f"<td>{r.get('state_acc_number') or '—'}</td>"
+                                f"<td>{_fmt_whole(r.get('central_number')) or '—'}</td>"
+                                f"<td>{_fmt_whole(r.get('branch_number')) or '—'}</td>"
+                                f"<td style='text-align:left'>{r.get('author') or '—'}</td>"
+                                f"<td style='text-align:left'>{r.get('vendor_name') or '—'}</td>"
+                                f"<td>{r.get('year_pub') or '—'}</td>"
+                                f"<td>{_fmt_price(r.get('price')) or '—'}</td>"
+                            )
+                            if i == 1:
+                                body_rows += (
+                                    f"<tr{row_style}><td rowspan='{rowspan}'>{sno_title}</td>"
+                                    f"<td rowspan='{rowspan}' style='text-align:left'>{display_title}{badge}</td>{common}</tr>"
+                                )
+                            else:
+                                body_rows += f"<tr{row_style}>{common}</tr>"
+
+                html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 9 - {today_str}</title>
+<style>{REPORT_COMMON_HEAD}</style></head><body>
+<div class="rt"><p class="t1">மாவட்ட நூலக ஆணைக்குழு {DISTRICT_NAME}</p><p class="t2">மாவட்ட மைய நூலகம்</p>
+<p class="t3">நூலகம் வாரியாக ஒரே தலைப்பில் 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் உள்ள நூல்கள் விவரம்</p>
+<p class="t4">(capital/small letters, space, quote-குறிகள், ஹைபன் identity suffix புறக்கணிக்கப்படும்) — {len(lib_groups)} நூலகங்களில் {total_titles} தலைப்புகள், {total_copies} பிரதிகள்</p>
+<p class="t4" style="color:#059669;">🟢 பச்சை நிற வரிசைகள் = அந்த தலைப்பின் அனைத்து பிரதிகளும் ஒரே விலையில் உள்ளன</p>
+<p class="t5">அறிக்கை நாள் : {today_str}</p></div>
+<table><thead><tr><th>வ.எண்</th><th>தலைப்பு</th><th>மாநிலப்<br>பதிவெண்</th><th>மையப்<br>பதிவெண்</th><th>கிளைப்<br>பதிவெண்</th>
+<th>எழுதியவர்</th><th>பதிப்பகம்</th><th>பதிப்பு<br>ஆண்டு</th><th>விலை</th></tr></thead>
+<tbody>{body_rows}</tbody></table>
+<div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
+
+            elif num == 10:
+                # அறிக்கை 9-ல் உள்ள தலைப்புகள் மட்டுமே (ஒரு நூலகத்தில் 2+ பிரதிகள்
+                # உள்ள தலைப்புகள்) — அவற்றிற்கு Book Id, தலைப்பு, விலை, முகப்புப்
+                # படம் மற்றும் அவை சென்றுள்ள அனைத்து நூலகங்களும் — தலைப்பு A-Z வரிசையில்.
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SQL} AS norm_ttl
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s
+                    GROUP BY lib, norm_ttl
+                    HAVING COUNT(*) >= 2
+                """, (year,))
+                dup_pairs = {(r["lib"], r["norm_ttl"]) for r in cur.fetchall()}
+                if not dup_pairs:
+                    raise _ReportError("அறிக்கை 9-ல் உள்ள (ஒரு நூலகத்தில் 2+ பிரதிகள் உள்ள) தலைப்புகள் எதுவும் இல்லை")
+                norm_titles_dup = {n for (_lib, n) in dup_pairs}
+
+                cur.execute(f"""
+                    SELECT title, price, NULLIF(TRIM(book_id),'') AS book_id,
+                           COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),'')) AS lib,
+                           NULLIF(TRIM(librarian_id),'') AS lib_id,
+                           {_NORM_TITLE_SQL} AS norm_ttl
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != ''
+                      AND academic_year = %s
+                      AND COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),'')) IS NOT NULL
+                    ORDER BY title, price
+                """, (year,))
+                all_rows = [r for r in cur.fetchall() if r["norm_ttl"] in norm_titles_dup]
+                if not all_rows:
+                    raise _ReportError("அறிக்கை 9-ல் உள்ள தலைப்புகளுக்கான நூலக ஒதுக்கீட்டு தரவு கிடைக்கவில்லை")
+
+                groups = {}   # (title, price) -> {"book_ids": set, "libs": set-of-(name,lib_id)}
+                for r in all_rows:
+                    key = (r["title"], r["price"])
+                    g = groups.setdefault(key, {"book_ids": set(), "libs": set()})
+                    if r["book_id"]:
+                        g["book_ids"].add(r["book_id"])
+                    if r["lib"]:
+                        g["libs"].add((r["lib"], r["lib_id"] or ""))
+
+                sorted_keys = sorted(groups.keys(), key=lambda k: (k[0] or "", k[1] or ""))
+
+                book_ids_all = set()
+                for g in groups.values():
+                    book_ids_all |= g["book_ids"]
+                covers_present = set()
+                if book_ids_all:
+                    try:
+                        cur.execute(
+                            "SELECT book_id FROM book_covers WHERE book_id = ANY(%s)",
+                            (list(book_ids_all),)
+                        )
+                        covers_present = {r["book_id"] for r in cur.fetchall()}
+                    except Exception as e:
+                        print(f"book_covers lookup skipped (table not ready?): {e}")
+                        conn.rollback()
+
+                table_rows = ""
+                for i, (title, price) in enumerate(sorted_keys, 1):
+                    g = groups[(title, price)]
+                    bids = sorted(g["book_ids"])
+                    bid_display = ", ".join(bids) if bids else "—"
+                    cover_bid = next((b for b in bids if b in covers_present), None)
+                    if cover_bid:
+                        img_cell = f'<img src="/api/book_cover/{quote(cover_bid)}" style="max-height:70px;max-width:60px;object-fit:contain;border:1px solid #ddd;border-radius:4px;">'
+                    else:
+                        img_cell = '<span style="color:#9ca3af;font-size:0.8rem;">படம் இல்லை</span>'
+                    libs_sorted = sorted(g["libs"], key=lambda t: t[0] or "")
+                    libs_display = ", ".join(
+                        f"{name} ({lid})" if lid else name
+                        for name, lid in libs_sorted
+                    ) if libs_sorted else "—"
+                    table_rows += (
+                        f"<tr><td>{i}</td>"
+                        f"<td>{bid_display}</td>"
+                        f"<td style='text-align:left'>{title}</td>"
+                        f"<td>{_fmt_price(price) or '—'}</td>"
+                        f"<td>{img_cell}</td>"
+                        f"<td style='text-align:left'>{libs_display}</td></tr>"
+                    )
+
+                html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 10 - {today_str}</title>
+<style>{REPORT_COMMON_HEAD}</style></head><body>
+<div class="rt"><p class="t1">மாவட்ட நூலக ஆணைக்குழு {DISTRICT_NAME}</p><p class="t2">மாவட்ட மைய நூலகம்</p>
+<p class="t3">அறிக்கை 9-ல் உள்ள (ஒரு நூலகத்தில் 2+ பிரதிகள் உள்ள) தலைப்புகளுக்கான Book Id, விலை, முகப்புப் படம் மற்றும் அவை சென்றுள்ள நூலகங்கள் (தலைப்பு A-Z வரிசையில்)</p>
+<p class="t4">மொத்தம் {len(groups)} தலைப்பு/விலை சேர்க்கைகள்</p>
+<p class="t5">அறிக்கை நாள் : {today_str}</p></div>
+<table><thead><tr><th>வ.எண்</th><th>Book Id</th><th>தலைப்பு</th><th>விலை</th><th>முகப்புப் படம்</th><th>நூலகங்கள்</th></tr></thead>
+<tbody>{table_rows}</tbody></table>
+<div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
+
+            elif num == 11:
+                # அறிக்கை 9-ல் இருந்து வேறுபாடு: இங்கே தலைப்பு மட்டும் இல்லாமல்
+                # விலையும் ஒரே மாதிரி இருக்கணும் — ஒரு நூலகத்திற்குள்ளேயே
+                # (100% ஒத்துப்போகும் தலைப்பு + ஒரே விலை) கொண்ட 2 அல்லது
+                # அதற்கு மேற்பட்ட பிரதிகள் சென்றிருந்தால் மட்டுமே இங்கு இடம்பெறும்.
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SIMPLE_SQL} AS norm_title,
+                           price
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != ''
+                      AND price IS NOT NULL AND TRIM(price) != ''
+                      AND academic_year = %s
+                    GROUP BY lib, norm_title, price
+                    HAVING COUNT(*) >= 2
+                """, (year,))
+                dup_triples11 = cur.fetchall()
+                # (lib, norm_title, price) -- இந்த மூன்றும் சேர்ந்து 2+ இருக்கும்
+                # இடத்தை மட்டுமே வைத்துக்கொள்கிறோம் (வேறு நூலகங்களில் இதே
+                # தலைப்பு/விலை 1 பிரதி மட்டும் இருந்தால் அது இதில் வராது).
+                qualifying_lib_norm_price = {(r["lib"], r["norm_title"], r["price"]) for r in dup_triples11}
+                if not qualifying_lib_norm_price:
+                    raise _ReportError("ஒரு நூலகத்திற்குள் ஒரே தலைப்பில், ஒரே விலையில் 2+ பிரதிகள் சென்ற நூல்கள் எதுவும் இல்லை")
+
+                cur.execute(f"""
+                    SELECT title, price, NULLIF(TRIM(book_id),'') AS book_id,
+                           COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           NULLIF(TRIM(librarian_id),'') AS lib_id,
+                           {_NORM_TITLE_SIMPLE_SQL} AS norm_ttl
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != ''
+                      AND price IS NOT NULL AND TRIM(price) != ''
+                      AND academic_year = %s
+                      AND COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),'')) IS NOT NULL
+                    ORDER BY title, price
+                """, (year,))
+                all_rows11 = [r for r in cur.fetchall() if (r["lib"], r["norm_ttl"], r["price"]) in qualifying_lib_norm_price]
+                if not all_rows11:
+                    raise _ReportError("இந்த தலைப்புகளுக்கான நூலக ஒதுக்கீட்டு தரவு கிடைக்கவில்லை")
+
+                groups11 = {}   # (title, price) -> {"book_ids": set, "libs": set-of-(name,lib_id)}
+                for r in all_rows11:
+                    key = (r["title"], r["price"])
+                    g = groups11.setdefault(key, {"book_ids": set(), "libs": set()})
+                    if r["book_id"]:
+                        g["book_ids"].add(r["book_id"])
+                    if r["lib"]:
+                        g["libs"].add((r["lib"], r["lib_id"] or ""))
+
+                sorted_keys11 = sorted(groups11.keys(), key=lambda k: (k[0] or "", k[1] or ""))
+
+                book_ids_all11 = set()
+                for g in groups11.values():
+                    book_ids_all11 |= g["book_ids"]
+                covers_present11 = set()
+                if book_ids_all11:
+                    try:
+                        cur.execute(
+                            "SELECT book_id FROM book_covers WHERE book_id = ANY(%s)",
+                            (list(book_ids_all11),)
+                        )
+                        covers_present11 = {r["book_id"] for r in cur.fetchall()}
+                    except Exception as e:
+                        print(f"book_covers lookup skipped (table not ready?): {e}")
+                        conn.rollback()
+
+                table_rows11 = ""
+                for i, (title, price) in enumerate(sorted_keys11, 1):
+                    g = groups11[(title, price)]
+                    bids = sorted(g["book_ids"])
+                    bid_display = ", ".join(bids) if bids else "—"
+                    cover_bid = next((b for b in bids if b in covers_present11), None)
+                    if cover_bid:
+                        img_cell = f'<img src="/api/book_cover/{quote(cover_bid)}" style="max-height:70px;max-width:60px;object-fit:contain;border:1px solid #ddd;border-radius:4px;">'
+                    else:
+                        img_cell = '<span style="color:#9ca3af;font-size:0.8rem;">படம் இல்லை</span>'
+                    libs_sorted = sorted(g["libs"], key=lambda t: t[0] or "")
+                    libs_display = ", ".join(
+                        f"{name} ({lid})" if lid else name
+                        for name, lid in libs_sorted
+                    ) if libs_sorted else "—"
+                    table_rows11 += (
+                        f"<tr><td>{i}</td>"
+                        f"<td>{bid_display}</td>"
+                        f"<td style='text-align:left'>{title}</td>"
+                        f"<td>{_fmt_price(price) or '—'}</td>"
+                        f"<td>{img_cell}</td>"
+                        f"<td style='text-align:left'>{libs_display}</td></tr>"
+                    )
+
+                html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 11 - {today_str}</title>
+<style>{REPORT_COMMON_HEAD}</style></head><body>
+<div class="rt"><p class="t1">மாவட்ட நூலக ஆணைக்குழு {DISTRICT_NAME}</p><p class="t2">மாவட்ட மைய நூலகம்</p>
+<p class="t3">ஒரு நூலகத்திற்குள்ளேயே ஒரே தலைப்பில் (capital/small letters மட்டும் புறக்கணிக்கப்படும், மற்றபடி exact match), ஒரே விலையில், 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் சென்றுள்ள நூல்களுக்கான Book Id, விலை, முகப்புப் படம் மற்றும் அவை சென்றுள்ள நூலகங்கள் (தலைப்பு A-Z வரிசையில்)</p>
+<p class="t4">மொத்தம் {len(groups11)} தலைப்பு/விலை சேர்க்கைகள்</p>
+<p class="t5">அறிக்கை நாள் : {today_str}</p></div>
+<table><thead><tr><th>வ.எண்</th><th>Book Id</th><th>தலைப்பு</th><th>விலை</th><th>முகப்புப் படம்</th><th>நூலகங்கள்</th></tr></thead>
+<tbody>{table_rows11}</tbody></table>
+<div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
+
+            elif num == 12:
+                # அறிக்கை 9-ன் அதே duplicate-கண்டறியும் தர்க்கம் (லைப்ரரி +
+                # normalized title, விலை பொருட்படுத்தாமல் 2+ பிரதிகள்) —
+                # ஆனால் flat, சுருக்கமான வடிவில்: ஒவ்வொரு (நூலகம், தலைப்பு)
+                # நகல் இணைக்கும் ஒரே ஒரு வரிசை மட்டும் — வ.எண், நூலகம்,
+                # தலைப்பு, பதிப்பகம்.
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SQL} AS norm_ttl
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s
+                    GROUP BY lib, norm_ttl
+                    HAVING COUNT(*) >= 2
+                """, (year,))
+                dup_pairs12 = {(r["lib"], r["norm_ttl"]) for r in cur.fetchall()}
+
+                if not dup_pairs12:
+                    raise _ReportError("எந்த நூலகத்திலும் ஒரே தலைப்பில் 2 அல்லது அதற்கு மேற்பட்ட பிரதிகள் உள்ள நூல்கள் இல்லை")
+
+                cur.execute(f"""
+                    SELECT COALESCE(NULLIF(TRIM(library_name_tm),''), NULLIF(TRIM(library_name),''), 'தெரியாத நூலகம்') AS lib,
+                           {_NORM_TITLE_SQL} AS norm_ttl,
+                           title, vendor_name, NULLIF(TRIM(book_id),'') AS book_id
+                    FROM books
+                    WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s
+                    ORDER BY lib, norm_ttl
+                """, (year,))
+                all_rows12 = [r for r in cur.fetchall() if (r["lib"], r["norm_ttl"]) in dup_pairs12]
+
+                groups12 = {}   # (lib, norm_ttl) -> {"title": str, "publishers": set, "book_ids": [str,...]}
+                for r in all_rows12:
+                    key = (r["lib"], r["norm_ttl"])
+                    g = groups12.setdefault(key, {"title": r["title"], "publishers": set(), "book_ids": []})
+                    pub = (r.get("vendor_name") or "").strip()
+                    if pub:
+                        g["publishers"].add(pub)
+                    bid = r.get("book_id")
+                    if bid and bid not in g["book_ids"]:
+                        g["book_ids"].append(bid)
+
+                sorted_keys12 = sorted(groups12.keys(), key=lambda k: (k[0] or "", groups12[k]["title"] or ""))
+
+                table_rows12 = ""
+                for i, key in enumerate(sorted_keys12, 1):
+                    lib, _norm = key
+                    g = groups12[key]
+                    pub_display = ", ".join(sorted(g["publishers"])) if g["publishers"] else "—"
+                    bid_display = "<br>".join(g["book_ids"]) if g["book_ids"] else "—"
+                    table_rows12 += (
+                        f"<tr><td>{i}</td>"
+                        f"<td style='text-align:left'>{lib}</td>"
+                        f"<td style='text-align:left'>{g['title']}</td>"
+                        f"<td style='text-align:left'>{bid_display}</td>"
+                        f"<td style='text-align:left'>{pub_display}</td></tr>"
+                    )
+
+                html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 12 - {today_str}</title>
+<style>{REPORT_COMMON_HEAD}</style></head><body>
+<div class="rt"><p class="t1">மாவட்ட நூலக ஆணைக்குழு {DISTRICT_NAME}</p><p class="t2">மாவட்ட மைய நூலகம்</p>
+<p class="t3">ஒரு நூலகத்தில் ஒரே தலைப்புள்ள 2 அல்லது அதற்கு மேற்பட்ட நூல்கள் உள்ள விவரம் (சுருக்கம்)</p>
+<p class="t4">மொத்தம் {len(groups12)} நூலகம்/தலைப்பு சேர்க்கைகள்</p>
+<p class="t5">அறிக்கை நாள் : {today_str}</p></div>
+<table><thead><tr><th>வ.எண்</th><th>நூலகம்</th><th>தலைப்பு</th><th>Book Id</th><th>பதிப்பகம்</th></tr></thead>
+<tbody>{table_rows12}</tbody></table>
+<div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
+
+            else:
+                raise _ReportError("இந்த அறிக்கை இன்னும் தயார் இல்லை (அடுத்த கட்டத்தில் வரும்)", 400)
+    return html
+
+
+@app.route("/api/report/<int:num>")
+@login_required
+def api_report(num):
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    year = request.args.get('year') or BASE_YEAR
+    rtype = request.args.get('rtype')
+    try:
+        html = _build_report_html(num, year, rtype)
+    except _ReportError as e:
+        return jsonify({"error": e.message}), e.status
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    report_id = _save_report(html, f"அறிக்கை {num} - {today_str}")
+    return jsonify({
+        "success": True,
+        "message": f"அறிக்கை {num} புதிய tab-ல் திறக்கப்படும்.\nPDF-ஆக சேமிக்க: Ctrl+P → Save as PDF",
+        "url": f"/reports/view/{report_id}"
+    })
+
+
+@app.route("/api/report/<int:num>/excel")
+@login_required
+def api_report_excel(num):
+    year = request.args.get('year') or BASE_YEAR
+    rtype = request.args.get('rtype')
+    try:
+        html = _build_report_html(num, year, rtype)
+    except _ReportError as e:
+        return jsonify({"error": e.message}), e.status
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    wb = _report_html_to_workbook([(f"அறிக்கை{num}", html)])
+    fname = f"அறிக்கை{num}_{datetime.now().strftime('%d%m%Y')}.xlsx"
+    return _workbook_response(wb, fname)
 
 
 # ==========================================================
@@ -1775,6 +2860,27 @@ def api_publisher_search():
         )
         rows = cur.fetchall()
     return jsonify([r["vendor_name"] for r in rows])
+
+
+@app.route("/api/title_search")
+@login_required
+def api_title_search():
+    """Dashboard 'Master Title Change' — குறைந்தது 4 எழுத்துகள் கொடுத்தால்
+    ஒத்த தலைப்புகளின் (title) பட்டியலை திரும்பும்."""
+    q = (request.args.get("q") or "").strip()
+    year = request.args.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+    if len(q) < 4:
+        return jsonify({"error": "குறைந்தது 4 எழுத்துகள் தேவை"}), 400
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT DISTINCT title FROM books "
+            "WHERE title IS NOT NULL AND TRIM(title) != '' "
+            "AND title ILIKE %s AND academic_year = %s "
+            "ORDER BY title LIMIT 20",
+            ('%' + q + '%', year)
+        )
+        rows = cur.fetchall()
+    return jsonify([r["title"] for r in rows])
 
 
 @app.route("/api/publisher_report", methods=["POST"])
@@ -1864,44 +2970,38 @@ def api_report5_libs():
     return jsonify([r["library_name_tm"] for r in rows])
 
 
-@app.route("/api/report5", methods=["POST"])
-@login_required
-def api_report5():
-    body = request.json or {}
-    lib_name = body.get("lib_name", "")
-    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+def _build_report5_html(lib_name, year):
     today_str = datetime.now().strftime("%d/%m/%Y")
-    try:
-        with DBConn() as (conn, cur):
-            cur.execute(
-                "SELECT * FROM books WHERE TRIM(library_name_tm) = %s "
-                "AND central_number IS NOT NULL AND academic_year = %s ORDER BY branch_number",
-                (lib_name, year)
-            )
-            rows = cur.fetchall()
-        if not rows:
-            return jsonify({"error": f'"{lib_name}" நூலகத்திற்கு பிரிக்கப்பட்ட புத்தகங்கள் இல்லை'})
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT * FROM books WHERE TRIM(library_name_tm) = %s "
+            "AND central_number IS NOT NULL AND academic_year = %s ORDER BY branch_number",
+            (lib_name, year)
+        )
+        rows = cur.fetchall()
+    if not rows:
+        raise _ReportError(f'"{lib_name}" நூலகத்திற்கு பிரிக்கப்பட்ட புத்தகங்கள் இல்லை')
 
-        table_rows, tpp, tap = "", 0.0, 0.0
-        for i, r in enumerate(rows, 1):
-            price, acc_price = r.get("price"), r.get("accepted_price")
-            try:
-                tpp += float(price) if price else 0.0
-            except Exception:
-                pass
-            try:
-                tap += float(acc_price) if acc_price else 0.0
-            except Exception:
-                pass
-            table_rows += f"""<tr><td style="text-align:center">{i}</td><td style="text-align:center">{r.get('state_acc_number') or '—'}</td>
+    table_rows, tpp, tap = "", 0.0, 0.0
+    for i, r in enumerate(rows, 1):
+        price, acc_price = r.get("price"), r.get("accepted_price")
+        try:
+            tpp += float(price) if price else 0.0
+        except Exception:
+            pass
+        try:
+            tap += float(acc_price) if acc_price else 0.0
+        except Exception:
+            pass
+        table_rows += f"""<tr><td style="text-align:center">{i}</td><td style="text-align:center">{r.get('state_acc_number') or '—'}</td>
 <td style="text-align:center">{_fmt_whole(r.get('central_number')) or '—'}</td><td style="text-align:center">{_fmt_whole(r.get('branch_number')) or '—'}</td>
 <td style="text-align:left">{r.get('title') or '—'}</td><td style="text-align:left">{r.get('author') or '—'}</td>
 <td style="text-align:left">{r.get('vendor_name') or '—'}</td><td style="text-align:center">{r.get('year_pub') or '—'}</td>
 <td style="text-align:right">{_fmt_price(price) or '—'}</td><td style="text-align:right">{_fmt_price(acc_price) or '—'}</td></tr>"""
-        table_rows += f"""<tr style="font-weight:bold;background:#e8f5e9;"><td colspan="8" style="text-align:right">மொத்தம்</td>
+    table_rows += f"""<tr style="font-weight:bold;background:#e8f5e9;"><td colspan="8" style="text-align:right">மொத்தம்</td>
 <td style="text-align:right">{tpp:.2f}</td><td style="text-align:right">{tap:.2f}</td></tr>"""
 
-        html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 5 - {lib_name}</title>
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>அறிக்கை 5 - {lib_name}</title>
 <style>@page{{size:A4 landscape;margin:12mm 10mm;}}body{{font-family:'Nirmala UI','Noto Sans Tamil',Arial,sans-serif;font-size:9pt;color:#000;margin:0;}}
 .rt{{text-align:center;margin-bottom:8px;}}.rt p{{margin:2px 0;}}.t1{{font-size:13pt;font-weight:bold;}}.t2{{font-size:12pt;font-weight:bold;}}
 .t3{{font-size:11pt;font-weight:bold;}}.t5{{font-size:9pt;}}
@@ -1916,14 +3016,43 @@ td{{border:1px solid #000;padding:4px;font-size:8.5pt;vertical-align:top;}}tr:nt
 <th style="width:6%">பதிப்பு<br>ஆண்டு</th><th style="width:8%">பதிப்பு<br>விலை</th><th style="width:8%">ஏற்பு<br>விலை</th></tr></thead>
 <tbody>{table_rows}</tbody></table>
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div></body></html>"""
-        report_id = _save_report(html, f"அறிக்கை 5 - {lib_name}")
-        return jsonify({
-            "success": True,
-            "message": f'"{lib_name}" அறிக்கை புதிய tab-ல் திறக்கப்படும்.\nPDF-ஆக சேமிக்க: Ctrl+P → Save as PDF',
-            "url": f"/reports/view/{report_id}"
-        })
+
+
+@app.route("/api/report5", methods=["POST"])
+@login_required
+def api_report5():
+    body = request.json or {}
+    lib_name = body.get("lib_name", "")
+    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+    try:
+        html = _build_report5_html(lib_name, year)
+    except _ReportError as e:
+        return jsonify({"error": e.message}), e.status
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    report_id = _save_report(html, f"அறிக்கை 5 - {lib_name}")
+    return jsonify({
+        "success": True,
+        "message": f'"{lib_name}" அறிக்கை புதிய tab-ல் திறக்கப்படும்.\nPDF-ஆக சேமிக்க: Ctrl+P → Save as PDF',
+        "url": f"/reports/view/{report_id}"
+    })
+
+
+@app.route("/api/report5/excel", methods=["POST"])
+@login_required
+def api_report5_excel():
+    body = request.json or {}
+    lib_name = body.get("lib_name", "")
+    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+    try:
+        html = _build_report5_html(lib_name, year)
+    except _ReportError as e:
+        return jsonify({"error": e.message}), e.status
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    wb = _report_html_to_workbook([("அறிக்கை5", html)])
+    fname = f"அறிக்கை5_{lib_name}_{datetime.now().strftime('%d%m%Y')}.xlsx"
+    return _workbook_response(wb, fname)
 
 
 # ==========================================================
@@ -1973,15 +3102,8 @@ def api_report7_ranges():
     return jsonify({"ranges": ranges, "total": total, "cn_min": cn_min, "cn_max": cn_max})
 
 
-@app.route("/api/report7", methods=["POST"])
-@login_required
-def api_report7():
-    body = request.json or {}
-    selected = body.get("selected", [])
-    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
-    if not selected:
-        return jsonify({"error": "எந்த பகுதியும் தேர்வு செய்யப்படவில்லை"}), 400
-    today_str = datetime.now().strftime("%d/%m/%Y")
+def _build_report7_chunk_html(cur, sel, year, total_books, total_ranges, today_str):
+    s, e, idx = sel["start"], sel["end"], sel["idx"]
     report_css = """
 @page{size:A4 landscape;margin:12mm 10mm;}
 body{font-family:'Nirmala UI','Noto Sans Tamil',Arial,sans-serif;font-size:9pt;color:#000;margin:0;}
@@ -1995,47 +3117,34 @@ tr:nth-child(even){background:#f5f5f5;}
 .sig{margin-top:30px;text-align:right;font-size:10pt;line-height:1.8;}
 .total-row{background:#e0f7fa;font-weight:bold;}
 """
-    try:
-        with DBConn() as (conn, cur):
-            cur.execute(
-                "SELECT COUNT(*) AS c FROM books WHERE central_number IS NOT NULL AND academic_year = %s",
-                (year,)
-            )
-            total_books = cur.fetchone()["c"]
-            _, _, all_ranges = _report7_ranges(cur, year)
-            total_ranges = len(all_ranges) if all_ranges else 0
-
-            saved, urls = [], []
-            for sel in selected:
-                s, e, idx = sel["start"], sel["end"], sel["idx"]
-                cur.execute(
-                    "SELECT * FROM books WHERE central_number BETWEEN %s AND %s AND academic_year = %s "
-                    "ORDER BY central_number",
-                    (s, e, year)
-                )
-                chunk_rows = cur.fetchall()
-                if not chunk_rows:
-                    continue
-                table_rows = ""
-                for r in chunk_rows:
-                    central_no = _fmt_whole(r.get("central_number")) or "—"
-                    branch_no = _fmt_whole(r.get("branch_number")) or "—"
-                    lib_name_tm = r.get("library_name_tm") or r.get("library_name") or "—"
-                    acc_price = r.get("accepted_price")
-                    table_rows += (
-                        "<tr>"
-                        f"<td style='text-align:center'>{central_no}</td>"
-                        f"<td style='text-align:left'>{r.get('author') or '—'}</td>"
-                        f"<td style='text-align:left'>{r.get('title') or '—'}</td>"
-                        f"<td style='text-align:center'>{r.get('year_pub') or '—'}</td>"
-                        f"<td style='text-align:left'>{r.get('vendor_name') or '—'}</td>"
-                        f"<td style='text-align:right'>{_fmt_price(acc_price) or '—'}</td>"
-                        f"<td style='text-align:left'>{branch_no} / {lib_name_tm}</td>"
-                        "</tr>"
-                    )
-                chunk_count = len(chunk_rows)
-                range_label = f"{s}–{e}"
-                html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+    cur.execute(
+        "SELECT * FROM books WHERE central_number BETWEEN %s AND %s AND academic_year = %s "
+        "ORDER BY central_number",
+        (s, e, year)
+    )
+    chunk_rows = cur.fetchall()
+    if not chunk_rows:
+        return None
+    table_rows = ""
+    for r in chunk_rows:
+        central_no = _fmt_whole(r.get("central_number")) or "—"
+        branch_no = _fmt_whole(r.get("branch_number")) or "—"
+        lib_name_tm = r.get("library_name_tm") or r.get("library_name") or "—"
+        acc_price = r.get("accepted_price")
+        table_rows += (
+            "<tr>"
+            f"<td style='text-align:center'>{central_no}</td>"
+            f"<td style='text-align:left'>{r.get('author') or '—'}</td>"
+            f"<td style='text-align:left'>{r.get('title') or '—'}</td>"
+            f"<td style='text-align:center'>{r.get('year_pub') or '—'}</td>"
+            f"<td style='text-align:left'>{r.get('vendor_name') or '—'}</td>"
+            f"<td style='text-align:right'>{_fmt_price(acc_price) or '—'}</td>"
+            f"<td style='text-align:left'>{branch_no} / {lib_name_tm}</td>"
+            "</tr>"
+        )
+    chunk_count = len(chunk_rows)
+    range_label = f"{s}–{e}"
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>அறிக்கை 7 (பகுதி {idx}/{total_ranges}) - {range_label}</title>
 <style>{report_css}</style></head><body>
 <div class="rt">
@@ -2061,6 +3170,34 @@ tr:nth-child(even){background:#f5f5f5;}
 </table>
 <div class="sig"><strong>நூலகர்</strong><br>மாவட்ட மைய நூலகம்<br>{DISTRICT_NAME}</div>
 </body></html>"""
+    return html, idx, range_label
+
+
+@app.route("/api/report7", methods=["POST"])
+@login_required
+def api_report7():
+    body = request.json or {}
+    selected = body.get("selected", [])
+    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+    if not selected:
+        return jsonify({"error": "எந்த பகுதியும் தேர்வு செய்யப்படவில்லை"}), 400
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    try:
+        with DBConn() as (conn, cur):
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM books WHERE central_number IS NOT NULL AND academic_year = %s",
+                (year,)
+            )
+            total_books = cur.fetchone()["c"]
+            _, _, all_ranges = _report7_ranges(cur, year)
+            total_ranges = len(all_ranges) if all_ranges else 0
+
+            saved, urls = [], []
+            for sel in selected:
+                result = _build_report7_chunk_html(cur, sel, year, total_books, total_ranges, today_str)
+                if result is None:
+                    continue
+                html, idx, range_label = result
                 rid = _save_report(html, f"அறிக்கை 7 - பகுதி {idx} ({range_label})")
                 saved.append(f"பகுதி {idx} ({range_label})")
                 urls.append(f"/reports/view/{rid}")
@@ -2077,6 +3214,42 @@ tr:nth-child(even){background:#f5f5f5;}
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/report7/excel", methods=["POST"])
+@login_required
+def api_report7_excel():
+    body = request.json or {}
+    selected = body.get("selected", [])
+    year = body.get("year") or _get_setting("active_academic_year", BASE_YEAR)
+    if not selected:
+        return jsonify({"error": "எந்த பகுதியும் தேர்வு செய்யப்படவில்லை"}), 400
+    today_str = datetime.now().strftime("%d/%m/%Y")
+    try:
+        with DBConn() as (conn, cur):
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM books WHERE central_number IS NOT NULL AND academic_year = %s",
+                (year,)
+            )
+            total_books = cur.fetchone()["c"]
+            _, _, all_ranges = _report7_ranges(cur, year)
+            total_ranges = len(all_ranges) if all_ranges else 0
+
+            sections = []
+            for sel in selected:
+                result = _build_report7_chunk_html(cur, sel, year, total_books, total_ranges, today_str)
+                if result is None:
+                    continue
+                html, idx, range_label = result
+                sections.append((f"பகுதி{idx}", html))
+
+        if not sections:
+            return jsonify({"error": "தேர்வு செய்த பகுதிகளில் data இல்லை"}), 400
+        wb = _report_html_to_workbook(sections)
+        fname = f"அறிக்கை7_{datetime.now().strftime('%d%m%Y')}.xlsx"
+        return _workbook_response(wb, fname)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ==========================================================
 # SEARCH
 # ==========================================================
@@ -2085,14 +3258,26 @@ tr:nth-child(even){background:#f5f5f5;}
 def api_search():
     text = request.args.get('q', '').strip()
     year = request.args.get('year') or BASE_YEAR
-    if len(text) < 2:
+    if len(text) < 1:
         return jsonify([])
+    # 1 எழுத்து மட்டும் தட்டச்சு செய்தால் (எ.கா. "த") — தலைப்பு சரியாக அந்த
+    # எழுத்தாக மட்டுமே உள்ள புத்தகங்கள் (exact match). இல்லையெனில் "%த%" என்பது
+    # நூற்றுக்கணக்கான தலைப்புகளைப் பொருத்தி LIMIT 100-க்குள் உண்மையான
+    # புத்தகம் மறைந்துவிடும். 2+ எழுத்துகளுக்கு பழைய contains தேடல் தொடரும்.
+    if len(text) == 1:
+        title_cond = "LOWER(TRIM(title)) = LOWER(%s)"
+        title_param = text
+    else:
+        title_cond = "title ILIKE %s"
+        title_param = f"%{text}%"
     with DBConn() as (conn, cur):
         cur.execute(
-            "SELECT title, price, vendor_name, COUNT(*) AS count "
-            "FROM books WHERE title ILIKE %s AND academic_year = %s "
+            "SELECT title, price, vendor_name, COUNT(*) AS count, "
+            "MIN(NULLIF(TRIM(book_id), '')) AS book_id, "
+            "MIN(NULLIF(TRIM(author), '')) AS author "
+            f"FROM books WHERE {title_cond} AND academic_year = %s "
             "GROUP BY title, price, vendor_name LIMIT 100",
-            (f"%{text}%", year)
+            (title_param, year)
         )
         rows = cur.fetchall()
 
@@ -2107,17 +3292,213 @@ def api_search():
         )
         multi_price_norm_titles = {r["norm_title"] for r in cur.fetchall()}
 
+        # இந்த batch-ல் இருக்கும் book_id-களுக்குள் ஏற்கனவே cover படம்
+        # சேமிக்கப்பட்டுள்ளதா என்பதை ஒரே query-ல் பார்த்துக்கொள்ளுதல்.
+        # book_covers table இன்னும் create ஆகாத DB-க்களில் (schema.sql
+        # update run செய்யாதவை) search உடைந்துவிடக் கூடாது என்பதற்காக
+        # இந்த query பிழையானால் தள்ளுபடி செய்யப்படும்.
+        book_ids = [r["book_id"] for r in rows if r["book_id"]]
+        covers_present = set()
+        if book_ids:
+            try:
+                cur.execute(
+                    "SELECT book_id FROM book_covers WHERE book_id = ANY(%s)",
+                    (book_ids,)
+                )
+                covers_present = {r["book_id"] for r in cur.fetchall()}
+            except Exception as e:
+                print(f"book_covers lookup skipped (table not ready?): {e}")
+                conn.rollback()
+
     out = []
     for r in rows:
         out.append({
-            "title": (r["title"] or "")[:80],
+            "title": r["title"] or "",
+            "author": r["author"] or "",
             "vendor": r["vendor_name"] or "",
             "price": r["price"] or "",
             "count": r["count"],
             "isMultiPrice": _norm_title(r["title"]) in multi_price_norm_titles,
             "isFuzzyDup": False,   # fuzzy cache — அடுத்த கட்டத்தில் சேர்க்கப்படும்
+            "bookId": r["book_id"] or "",
+            "hasCover": bool(r["book_id"]) and r["book_id"] in covers_present,
         })
     return jsonify(out)
+
+
+# ==========================================================
+# புத்தக முகப்புப் படங்கள் (Book Covers) — ஒரே தலைப்பில் வேறு
+# வேறு விலைகள் உள்ள புத்தகங்களை பிரித்தறிய, Book Id வாரியாக
+# முகப்புப் படம் (front page photo) அப்லோட் செய்து பார்க்க.
+# ==========================================================
+_ALLOWED_COVER_EXT = {".jpg", ".jpeg", ".jfif"}
+
+
+@app.route("/api/admin/search_book_for_cover")
+@admin_required
+def api_admin_search_book_for_cover():
+    """Cover Upload-க்கு — Admin விரும்பும் எந்த Book Id-ஐயும் தேடி
+    தேர்ந்தெடுக்க. Book Id அல்லது தலைப்பு வைத்து தேடலாம். Book Id
+    இல்லாத rows (காலியானவை) இதில் வராது — cover book_id வைத்தே
+    சேமிக்கப்படுவதால்."""
+    text = (request.args.get("q") or "").strip()
+    year = request.args.get("year") or BASE_YEAR
+    if len(text) < 2:
+        return jsonify([])
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT DISTINCT ON (book_id) book_id, title, price, vendor_name "
+            "FROM books "
+            "WHERE (book_id ILIKE %s OR title ILIKE %s) "
+            "AND book_id IS NOT NULL AND TRIM(book_id) != '' "
+            "AND academic_year = %s "
+            "ORDER BY book_id, title LIMIT 50",
+            (f"%{text}%", f"%{text}%", year)
+        )
+        rows = cur.fetchall()
+        book_ids = [r["book_id"] for r in rows]
+        covers_present = set()
+        if book_ids:
+            try:
+                cur.execute(
+                    "SELECT book_id FROM book_covers WHERE book_id = ANY(%s)",
+                    (book_ids,)
+                )
+                covers_present = {r["book_id"] for r in cur.fetchall()}
+            except Exception as e:
+                print(f"book_covers lookup skipped (table not ready?): {e}")
+                conn.rollback()
+
+    rows.sort(key=lambda r: (r["title"] or "", r["price"] or ""))
+    return jsonify([
+        {
+            "bookId": r["book_id"],
+            "title": r["title"] or "",
+            "price": r["price"] or "",
+            "vendor": r["vendor_name"] or "",
+            "hasCover": r["book_id"] in covers_present,
+        }
+        for r in rows
+    ])
+
+
+@app.route("/api/admin/multi_price_book_ids")
+@admin_required
+def api_admin_multi_price_book_ids():
+    """'ஒரே தலைப்பில் வேறு விலை' உள்ள புத்தகங்களின் Book Id பட்டியல் —
+    Cover Upload dropdown-க்கு. Book Id இல்லாத rows இதில் வராது."""
+    year = request.args.get("year") or BASE_YEAR
+    with DBConn() as (conn, cur):
+        cur.execute(
+            f"WITH multi AS ("
+            f"  SELECT {_NORM_TITLE_SQL} AS norm_title FROM books "
+            f"  WHERE title IS NOT NULL AND TRIM(title) != '' AND academic_year = %s "
+            f"  GROUP BY norm_title HAVING COUNT(DISTINCT price) > 1"
+            f") "
+            f"SELECT DISTINCT ON (b.book_id) b.book_id, b.title, b.price, b.vendor_name "
+            f"FROM books b "
+            f"WHERE {_NORM_TITLE_SQL.replace('title', 'b.title')} IN (SELECT norm_title FROM multi) "
+            f"AND b.book_id IS NOT NULL AND TRIM(b.book_id) != '' "
+            f"AND b.academic_year = %s "
+            f"ORDER BY b.book_id, b.title",
+            (year, year)
+        )
+        rows = cur.fetchall()
+        book_ids = [r["book_id"] for r in rows]
+        covers_present = set()
+        if book_ids:
+            try:
+                cur.execute(
+                    "SELECT book_id FROM book_covers WHERE book_id = ANY(%s)",
+                    (book_ids,)
+                )
+                covers_present = {r["book_id"] for r in cur.fetchall()}
+            except Exception as e:
+                print(f"book_covers lookup skipped (table not ready?): {e}")
+                conn.rollback()
+
+    rows.sort(key=lambda r: (r["title"] or "", r["price"] or ""))
+    return jsonify([
+        {
+            "bookId": r["book_id"],
+            "title": r["title"] or "",
+            "price": r["price"] or "",
+            "vendor": r["vendor_name"] or "",
+            "hasCover": r["book_id"] in covers_present,
+        }
+        for r in rows
+    ])
+
+
+def _compress_cover_image(image_bytes, max_dimension=800, quality=72):
+    """
+    Book cover படத்தை DB-ல் store பண்றதுக்கு முன் சிறிதாக்குகிறது:
+    - அளவு max_dimension (px) தாண்டாதபடி resize (aspect ratio மாறாது)
+    - JPEG-ஆக, குறைந்த quality-ல் மறுபடியும் encode (storage மிச்சம்)
+    """
+    img = PILImage.open(BytesIO(image_bytes))
+    img = img.convert("RGB")  # PNG/JFIF transparency இருந்தாலும் JPEG-க்கு safe
+    img.thumbnail((max_dimension, max_dimension), PILImage.LANCZOS)
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=quality, optimize=True)
+    return out.getvalue()
+
+
+@app.route("/api/admin/book_cover/upload", methods=["POST"])
+@admin_required
+def api_admin_book_cover_upload():
+    book_id = (request.form.get("book_id") or "").strip()
+    title = (request.form.get("title") or "").strip()
+    f = request.files.get("file")
+
+    if not book_id:
+        return jsonify({"error": "Book Id தேர்ந்தெடுக்கவும்"}), 400
+    if not f or not f.filename:
+        return jsonify({"error": "முகப்புப் படத்தை தேர்ந்தெடுக்கவும்"}), 400
+
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in _ALLOWED_COVER_EXT:
+        return jsonify({"error": "jpg / jpeg / jfif படங்கள் மட்டுமே அனுமதிக்கப்படும்"}), 400
+
+    image_bytes = f.read()
+    if not image_bytes:
+        return jsonify({"error": "படக் கோப்பு காலியாக உள்ளது"}), 400
+    if len(image_bytes) > 5 * 1024 * 1024:
+        return jsonify({"error": "படத்தின் அளவு 5MB-க்கு குறைவாக இருக்க வேண்டும்"}), 400
+
+    try:
+        image_bytes = _compress_cover_image(image_bytes)
+    except Exception as e:
+        return jsonify({"error": f"படத்தை சரியாக படிக்க முடியவில்லை: {e}"}), 400
+
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
+            "VALUES (%s, %s, %s, 'image/jpeg', now()) "
+            "ON CONFLICT (book_id) DO UPDATE SET "
+            "title = EXCLUDED.title, image = EXCLUDED.image, "
+            "content_type = EXCLUDED.content_type, uploaded_at = now()",
+            (book_id, title, psycopg2.Binary(image_bytes))
+        )
+
+    return jsonify({"success": True, "message": f"'{book_id}' Book Id-க்கு முகப்புப் படம் சேமிக்கப்பட்டது."})
+
+
+@app.route("/api/book_cover/<book_id>")
+@login_required
+def api_book_cover_get(book_id):
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT image, content_type FROM book_covers WHERE book_id = %s",
+            (book_id,)
+        )
+        row = cur.fetchone()
+    if not row:
+        return jsonify({"error": "இந்த Book Id-க்கு முகப்புப் படம் இன்னும் அப்லோட் செய்யப்படவில்லை"}), 404
+    return send_file(
+        BytesIO(bytes(row["image"])),
+        mimetype=row["content_type"] or "image/jpeg"
+    )
 
 
 # ==========================================================
@@ -2137,8 +3518,7 @@ def api_librarian_search():
     with DBConn() as (conn, cur):
         cur.execute(
             "SELECT id, title, author FROM books "
-            f"WHERE NORMALIZE(TRIM(library_name_tm), NFC) = NORMALIZE(%s, NFC) "
-            f"AND {_SENT_SQL} AND NORMALIZE(title, NFC) ILIKE NORMALIZE(%s, NFC) "
+            f"WHERE library_name_tm = %s AND {_SENT_SQL} AND title ILIKE %s "
             "AND academic_year = %s "
             "ORDER BY title LIMIT 50",
             (library, f"%{text}%", active_year)
@@ -2238,6 +3618,109 @@ def api_libraries_for_type():
 
 
 # ==========================================================
+# ஊதிய மையம் (WAGE CENTER) — state_acc_number_1 column-ல் நூலகம் வாரியாக
+# சேமிக்கப்பட்டுள்ள ஊதிய மைய குறியீட்டின் அடிப்படையில், "பிரிக்க" / "அனுப்ப"
+# இரண்டிலும் அந்த ஊதிய மையத்திற்குண்டான நூலகங்கள் மட்டும் காட்ட உதவும்.
+# dclstaff — அதிகபட்சம் 3 ஊதிய மையங்கள் வரை ஒரே நேரத்தில் தேர்வு செய்யலாம்
+# (query string-ல் கமா-பிரிக்கப்பட்டு அனுப்பப்படும்: wage_center=A,B,C).
+# admin எப்போதும் அனைத்து ஊதிய மையங்களையும் பார்ப்பார் — filter இல்லை.
+# வரிசை எப்போதும்: மாவட்ட மைய நூலகம் (DCL) → முழு நேர (FTL) → கிளை (BL) → ஊர்ப்புற (VL)
+# ==========================================================
+def _get_wage_centers_param():
+    """query string-ல் இருந்து wage_center param-ஐ படிக்கும் — கமா-பிரிக்கப்பட்ட
+    பல மதிப்புகளை (அதிகபட்சம் 3) ஏற்கும். காலியாக இருந்தால் [] — 'அனைத்தும்' எனப் பொருள்."""
+    raw = request.args.get("wage_center", "")
+    centers = [c.strip() for c in raw.split(",") if c.strip()]
+    return centers[:3]
+
+
+def _lib_type_rank(lib_type):
+    """library_type text-ஐ வைத்து DCL→FTL→BL→VL வரிசைக்கான rank கொடுக்கும்.
+    'Full Time Branch Library -FTL' போன்ற பல்வேறு உரை வடிவங்களுக்கும் பொருந்தும்படி
+    ஆங்கில code-ஐயும், தமிழ் வார்த்தைகளையும் இரண்டையும் பரிசோதிக்கிறோம்."""
+    orig = lib_type or ""
+    t = orig.upper()
+    if re.search(r'(?<![A-Z])DCL(?![A-Z])', t) or 'மாவட்ட' in orig:
+        return 0
+    if re.search(r'(?<![A-Z])FTL(?![A-Z])', t) or 'முழு நேர' in orig:
+        return 1
+    if re.search(r'(?<![A-Z])BL(?![A-Z])', t) or 'கிளை' in orig:
+        return 2
+    if re.search(r'(?<![A-Z])VL(?![A-Z])', t) or 'கிராம' in orig or 'ஊர்ப்புற' in orig:
+        return 3
+    return 4
+
+
+@app.route("/api/wage_centers/available")
+@login_required
+def api_wage_centers_available():
+    year = request.args.get('year') or BASE_YEAR
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT DISTINCT TRIM(state_acc_number_1) AS wc FROM books "
+            "WHERE state_acc_number_1 IS NOT NULL AND TRIM(state_acc_number_1) != '' "
+            "AND academic_year=%s ORDER BY wc",
+            (year,)
+        )
+        centers = [r["wc"] for r in cur.fetchall()]
+    return jsonify(centers)
+
+
+# dclstaff எந்த ஊதிய மைய(ங்க)ளில் வேலை செய்ய வேண்டும் என Admin தேர்ந்தெடுத்து
+# வைக்கும் setting — dclstaff-க்கு selector இல்லை, இதையே தானாக பின்பற்றுவார்கள்.
+@app.route("/api/wage_centers/active", methods=["GET"])
+@login_required
+def api_wage_centers_active_get():
+    raw = _get_setting("active_wage_centers", "")
+    centers = [c.strip() for c in raw.split(",") if c.strip()] if raw else []
+    return jsonify({"active_wage_centers": centers})
+
+
+@app.route("/api/wage_centers/active", methods=["POST"])
+@admin_required
+def api_wage_centers_active_set():
+    data = request.json or {}
+    centers = data.get("wage_centers", [])
+    if not isinstance(centers, list):
+        return jsonify({"error": "wage_centers ஒரு பட்டியலாக இருக்க வேண்டும்"}), 400
+    centers = [str(c).strip() for c in centers if str(c).strip()][:3]
+    _set_setting("active_wage_centers", ",".join(centers))
+    return jsonify({"success": True, "active_wage_centers": centers})
+
+
+@app.route("/api/libraries_for_wage_center")
+@login_required
+def api_libraries_for_wage_center():
+    title = request.args.get('title', '')
+    price = request.args.get('price', '')
+    wage_centers = _get_wage_centers_param()
+    year = request.args.get('year') or BASE_YEAR
+    with DBConn() as (conn, cur):
+        if wage_centers:
+            placeholders = ",".join(["%s"] * len(wage_centers))
+            cur.execute(
+                "SELECT library_name_tm, MIN(library_type) AS library_type FROM books "
+                f"WHERE title=%s AND price=%s AND TRIM(state_acc_number_1) IN ({placeholders}) "
+                "AND (set_number IS NULL OR set_number='') "
+                "AND academic_year=%s AND library_name_tm IS NOT NULL "
+                "GROUP BY library_name_tm",
+                (title, price, *wage_centers, year)
+            )
+        else:
+            cur.execute(
+                "SELECT library_name_tm, MIN(library_type) AS library_type FROM books "
+                "WHERE title=%s AND price=%s "
+                "AND (set_number IS NULL OR set_number='') "
+                "AND academic_year=%s AND library_name_tm IS NOT NULL "
+                "GROUP BY library_name_tm",
+                (title, price, year)
+            )
+        rows = cur.fetchall()
+    rows.sort(key=lambda r: (_lib_type_rank(r["library_type"]), r["library_name_tm"] or ""))
+    return jsonify([r["library_name_tm"] for r in rows])
+
+
+# ==========================================================
 # "தவறான பதிவு நீக்கம்" (RECLAIM) — தவறாக பிரிக்க/அனுப்ப ஆன புத்தகங்களை
 # மீண்டும் unassigned நிலைக்கு கொண்டுவருதல் + விடுவிக்கப்படும் central/branch
 # எண்களை pool-ல் சேமித்து அடுத்த Assign-ல் மறுபடியும் வழங்குதல்.
@@ -2257,7 +3740,7 @@ def api_reclaim_search():
         )
         rows = cur.fetchall()
     return jsonify([{
-        "title": (r["title"] or "")[:80],
+        "title": r["title"] or "",
         "vendor": r["vendor_name"] or "",
         "price": r["price"] or "",
         "count": r["count"],
@@ -2299,39 +3782,43 @@ def api_reclaim_execute():
     if not ids:
         return jsonify({"error": "குறைந்தது ஒரு வரியை தேர்ந்தெடுக்கவும்"}), 400
 
-    with DBConn() as (conn, cur):
-        cur.execute(
-            "SELECT id, central_number, branch_number, librarian_id FROM books "
-            "WHERE id = ANY(%s) AND central_number IS NOT NULL FOR UPDATE",
-            (ids,)
-        )
-        rows = cur.fetchall()
-        if not rows:
-            return jsonify({"error": "தேர்ந்தெடுத்தவை ஏற்கனவே reclaim ஆகிவிட்டன — refresh செய்து பாருங்கள்"}), 400
-
-        cur.execute(
-            "UPDATE books SET set_number=NULL, central_number=NULL, branch_number=NULL, "
-            "work_status=NULL, sent_details=NULL, date=NULL WHERE id = ANY(%s)",
-            ([r["id"] for r in rows],)
-        )
-
-        central_vals = [r["central_number"] for r in rows if r["central_number"] is not None]
-        if central_vals:
+    try:
+        with DBConn() as (conn, cur):
             cur.execute(
-                "INSERT INTO reclaimed_central (academic_year, central_number) VALUES " +
-                ",".join(["(%s,%s)"] * len(central_vals)) +
-                " ON CONFLICT (academic_year, central_number) DO NOTHING",
-                tuple(x for v in central_vals for x in (year, v))
+                "SELECT id, central_number, branch_number, librarian_id FROM books "
+                "WHERE id = ANY(%s) AND central_number IS NOT NULL FOR UPDATE",
+                (ids,)
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return jsonify({"error": "தேர்ந்தெடுத்தவை ஏற்கனவே reclaim ஆகிவிட்டன — refresh செய்து பாருங்கள்"}), 400
+
+            cur.execute(
+                "UPDATE books SET set_number=NULL, central_number=NULL, branch_number=NULL, "
+                "work_status=NULL, sent_details=NULL, date=NULL WHERE id = ANY(%s)",
+                ([r["id"] for r in rows],)
             )
 
-        branch_pairs = [(year, str(r["librarian_id"]).strip(), r["branch_number"])
-                        for r in rows if r["branch_number"] is not None and r["librarian_id"]]
-        if branch_pairs:
-            cur.executemany(
-                "INSERT INTO reclaimed_branch (academic_year, librarian_id, branch_number) VALUES (%s, %s, %s) "
-                "ON CONFLICT (academic_year, librarian_id, branch_number) DO NOTHING",
-                branch_pairs
-            )
+            central_vals = [r["central_number"] for r in rows if r["central_number"] is not None]
+            if central_vals:
+                cur.execute(
+                    "INSERT INTO reclaimed_central (academic_year, central_number) VALUES " +
+                    ",".join(["(%s,%s)"] * len(central_vals)) +
+                    " ON CONFLICT (academic_year, central_number) DO NOTHING",
+                    tuple(x for v in central_vals for x in (year, v))
+                )
+
+            branch_pairs = [(year, str(r["librarian_id"]).strip(), r["branch_number"])
+                            for r in rows if r["branch_number"] is not None and r["librarian_id"]]
+            if branch_pairs:
+                cur.executemany(
+                    "INSERT INTO reclaimed_branch (academic_year, librarian_id, branch_number) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (academic_year, librarian_id, branch_number) DO NOTHING",
+                    branch_pairs
+                )
+    except Exception as e:
+        app.logger.exception("api_reclaim_execute failed")
+        return jsonify({"error": f"Reclaim தோல்வி: {e}"}), 500
 
     return jsonify({
         "success": True,
@@ -2498,16 +3985,31 @@ def api_assign():
                 }), 409
 
             # 1) matching unassigned rows-ஐ lock செய் (இந்த ஆண்டுக்கு மட்டும்)
-            cur.execute(
-                "SELECT id, librarian_id FROM books "
-                "WHERE title=%s AND price=%s AND library_type=%s "
-                "AND library_name_tm = ANY(%s) "
-                "AND (set_number IS NULL OR set_number='') "
-                "AND academic_year=%s "
-                "ORDER BY id "
-                "FOR UPDATE",
-                (title, price, lib_type, libraries, year)
-            )
+            #    lib_type கொடுக்கப்படாவிட்டால் (ஊதிய மையம் வழியாக பல நூலக
+            #    வகைகளும் கலந்து தேர்ந்தெடுக்கப்பட்டிருக்கலாம்) — library_type
+            #    கட்டுப்பாடு இல்லாமல், library_name_tm மட்டும் வைத்து lock செய்கிறோம்.
+            if lib_type:
+                cur.execute(
+                    "SELECT id, librarian_id FROM books "
+                    "WHERE title=%s AND price=%s AND library_type=%s "
+                    "AND library_name_tm = ANY(%s) "
+                    "AND (set_number IS NULL OR set_number='') "
+                    "AND academic_year=%s "
+                    "ORDER BY id "
+                    "FOR UPDATE",
+                    (title, price, lib_type, libraries, year)
+                )
+            else:
+                cur.execute(
+                    "SELECT id, librarian_id FROM books "
+                    "WHERE title=%s AND price=%s "
+                    "AND library_name_tm = ANY(%s) "
+                    "AND (set_number IS NULL OR set_number='') "
+                    "AND academic_year=%s "
+                    "ORDER BY id "
+                    "FOR UPDATE",
+                    (title, price, libraries, year)
+                )
             rows = cur.fetchall()
             if not rows:
                 return jsonify({'error': 'பதிவு செய்ய எதுவும் இல்லை (ஏற்கனவே assign ஆகியிருக்கலாம் — refresh செய்து பாருங்கள்)'}), 400
