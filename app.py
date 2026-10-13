@@ -3631,56 +3631,74 @@ def api_admin_book_covers_import_from_db():
         src.close()
         return jsonify(result)
 
-    # ---- 4. உண்மையான இறக்குமதி ----
-    applied = 0
+    # ---- 4. உண்மையான இறக்குமதி — சிறு தொகுதிகளாக, நேர வரம்புடன் (timeout / நினைவகப் பிரச்சினை வராமல்) ----
+    # offset: முந்தைய அழைப்பில் எங்கே நின்றது; JS தானாகத் திரும்ப அழைக்கும்.
     try:
-        need_ids = sorted({sid for sid, _ in plan})
-        images = {}
-        if need_ids:
+        offset = max(0, int(data.get("offset") or 0))
+    except Exception:
+        offset = 0
+    BATCH = 10
+    TIME_BUDGET = 15  # வினாடிகள்
+    t0 = time.time()
+
+    title_by_target = {}
+    for r in target_rows:
+        title_by_target.setdefault(r["book_id"], r["title"])
+
+    applied = 0
+    idx = offset
+    try:
+        while idx < len(plan):
+            chunk = plan[idx: idx + BATCH]
+            need_ids = sorted({sid for sid, _ in chunk})
+            images = {}
             scur.execute(
                 "SELECT book_id, image, content_type FROM book_covers WHERE book_id = ANY(%s)",
                 (need_ids,)
             )
             for r in scur.fetchall():
                 images[r["book_id"]] = (bytes(r["image"]), r["content_type"] or "image/jpeg")
+
+            with DBConn() as (conn, cur):
+                for sid, tids in chunk:
+                    img = images.get(sid)
+                    if not img:
+                        continue
+                    for t in tids:
+                        if t in existing_covers and not overwrite:
+                            continue
+                        if overwrite:
+                            cur.execute(
+                                "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
+                                "VALUES (%s, %s, %s, %s, now()) "
+                                "ON CONFLICT (book_id) DO UPDATE SET title = EXCLUDED.title, "
+                                "image = EXCLUDED.image, content_type = EXCLUDED.content_type, uploaded_at = now()",
+                                (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
+                            )
+                        else:
+                            cur.execute(
+                                "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
+                                "VALUES (%s, %s, %s, %s, now()) ON CONFLICT (book_id) DO NOTHING",
+                                (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
+                            )
+                        applied += 1
+            idx += len(chunk)
+            if time.time() - t0 > TIME_BUDGET:
+                break
     except Exception as e:
-        src.close()
-        return jsonify({"error": "படங்களை மூல DB-ல் இருந்து படிக்க முடியவில்லை: " + str(e).replace(source_url, "***")[:200]}), 400
+        return jsonify({
+            "error": "இறக்குமதியின் நடுவில் பிழை: " + str(e).replace(source_url, "***")[:200],
+            "next_offset": idx, "applied": applied
+        }), 500
     finally:
         try:
             src.close()
         except Exception:
             pass
 
-    title_by_target = {}
-    for r in target_rows:
-        title_by_target.setdefault(r["book_id"], r["title"])
-
-    with DBConn() as (conn, cur):
-        for sid, tids in plan:
-            img = images.get(sid)
-            if not img:
-                continue
-            for t in tids:
-                if t in existing_covers and not overwrite:
-                    continue
-                if overwrite:
-                    cur.execute(
-                        "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
-                        "VALUES (%s, %s, %s, %s, now()) "
-                        "ON CONFLICT (book_id) DO UPDATE SET title = EXCLUDED.title, "
-                        "image = EXCLUDED.image, content_type = EXCLUDED.content_type, uploaded_at = now()",
-                        (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
-                    )
-                else:
-                    cur.execute(
-                        "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
-                        "VALUES (%s, %s, %s, %s, now()) ON CONFLICT (book_id) DO NOTHING",
-                        (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
-                    )
-                applied += 1
-
     result["applied"] = applied
+    result["plan_total"] = len(plan)
+    result["next_offset"] = idx if idx < len(plan) else None
     return jsonify(result)
 
 

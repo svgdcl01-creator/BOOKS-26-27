@@ -2466,6 +2466,20 @@ async function reclaimSelected() {
 }
 
 // வேறு மாவட்ட DB-ல் இருந்து (Dindigul) முகப்புப் படங்களை தலைப்பு பொருத்தி இறக்குமதி
+async function _postJsonSafe(url, body) {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { error: 'Server சரியான பதில் தரவில்லை (HTTP ' + resp.status + '). Render Logs-ஐப் பார்க்கவும்; வேலை நடுவில் நின்றிருக்கலாம் — மீண்டும் "இறக்குமதி செய்" அழுத்தினால் மீதமுள்ளவை தொடரும்.' };
+  }
+}
+
 async function runCoverImport(dryRun) {
   const url = document.getElementById('coverImportSourceUrl').value.trim();
   const overwrite = document.getElementById('coverImportOverwrite').checked;
@@ -2475,33 +2489,46 @@ async function runCoverImport(dryRun) {
 
   showLoading(dryRun ? '⏳ சரிபார்க்கிறது...' : '⏳ படங்களை இறக்குமதி செய்கிறது...');
   try {
-    const res = await fetch('/api/admin/book_covers/import_from_db', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_url: url, dry_run: dryRun, overwrite })
-    });
-    const r = await res.json();
+    let r = await _postJsonSafe('/api/admin/book_covers/import_from_db',
+      { source_url: url, dry_run: dryRun, overwrite, offset: 0 });
+    if (r.error) { hideLoading(); box.style.color = '#c0392b'; box.textContent = r.error; return; }
+
+    const first = r;                 // முதல் அழைப்பின் புள்ளிவிவரம் (பொருந்தியவை போன்றவை)
+    let totalApplied = r.applied || 0;
+    let guard = 0;
+    while (!dryRun && r.next_offset !== null && r.next_offset !== undefined && guard < 500) {
+      guard++;
+      showLoading('⏳ படங்களை இறக்குமதி செய்கிறது... (' + r.next_offset + ' / ' + r.plan_total + ')');
+      r = await _postJsonSafe('/api/admin/book_covers/import_from_db',
+        { source_url: url, dry_run: false, overwrite, offset: r.next_offset });
+      if (r.error) {
+        hideLoading();
+        box.style.color = '#c0392b';
+        box.textContent = r.error + ' (இதுவரை சேர்க்கப்பட்டவை: ' + totalApplied + ')';
+        return;
+      }
+      totalApplied += r.applied || 0;
+    }
     hideLoading();
-    if (r.error) { box.style.color = '#c0392b'; box.textContent = r.error; return; }
+
     const list = (arr) => arr && arr.length
       ? '<br><span style="color:#6b7280;">' + arr.map(x => escHtml(String(x || '').substring(0, 50))).join(' • ') + '</span>' : '';
     box.style.color = '#1e293b';
     box.innerHTML =
       (dryRun ? '🔍 <b>சரிபார்ப்பு முடிவு</b> (இன்னும் சேர்க்கவில்லை)' : '✅ <b>இறக்குமதி முடிந்தது</b>') + '<br>' +
-      'மூலத்தில் உள்ள படங்கள்: <b>' + r.source_total + '</b><br>' +
-      'பொருந்தியவை: <b>' + r.matched_titles + '</b><br>' +
-      (dryRun ? 'சேர்க்கப்படப்போகும் Book Id: <b>' + r.to_apply + '</b>' : 'சேர்க்கப்பட்ட Book Id: <b>' + (r.applied || 0) + '</b>') + '<br>' +
-      'ஏற்கனவே படம் உள்ளவை: <b>' + r.already_have_cover + '</b><br>' +
-      'பொருந்தாதவை (விடப்பட்டன): <b>' + r.no_match + '</b>' + list(r.no_match_samples) + '<br>' +
-      'தெளிவில்லாதவை (விடப்பட்டன): <b>' + r.ambiguous + '</b>' + list(r.ambiguous_samples);
-    if (!dryRun) toast('✅ ' + (r.applied || 0) + ' முகப்புப் படங்கள் சேர்க்கப்பட்டன', 'success');
+      'மூலத்தில் உள்ள படங்கள்: <b>' + first.source_total + '</b><br>' +
+      'பொருந்தியவை: <b>' + first.matched_titles + '</b><br>' +
+      (dryRun ? 'சேர்க்கப்படப்போகும் Book Id: <b>' + first.to_apply + '</b>' : 'சேர்க்கப்பட்ட Book Id: <b>' + totalApplied + '</b>') + '<br>' +
+      'ஏற்கனவே படம் உள்ளவை: <b>' + first.already_have_cover + '</b><br>' +
+      'பொருந்தாதவை (விடப்பட்டன): <b>' + first.no_match + '</b>' + list(first.no_match_samples) + '<br>' +
+      'தெளிவில்லாதவை (விடப்பட்டன): <b>' + first.ambiguous + '</b>' + list(first.ambiguous_samples);
+    if (!dryRun) toast('✅ ' + totalApplied + ' முகப்புப் படங்கள் சேர்க்கப்பட்டன', 'success');
   } catch (e) {
     hideLoading();
     box.style.color = '#c0392b';
     box.textContent = 'Server பிழை: ' + e;
   }
 }
-
 
 // Dindigul DB-ல் திருத்தப்பட்ட தலைப்புகளை Book Id மூலம் இங்கு ஒத்திசைக்க
 async function runTitleSync(dryRun) {
