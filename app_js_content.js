@@ -2501,3 +2501,43 @@ async function runCoverImport(dryRun) {
     box.textContent = 'Server பிழை: ' + e;
   }
 }
+
+
+// Dindigul DB-ல் திருத்தப்பட்ட தலைப்புகளை Book Id மூலம் இங்கு ஒத்திசைக்க
+async function runTitleSync(dryRun) {
+  const url = document.getElementById('titleSyncSourceUrl').value.trim();
+  const year = document.getElementById('titleSyncYear').value.trim() || '2025-2026';
+  const box = document.getElementById('titleSyncMsg');
+  if (!url) { box.style.color = '#c0392b'; box.textContent = 'Dindigul DB-ன் Database URL-ஐ உள்ளிடவும்'; return; }
+  if (!dryRun && !confirm(year + ' ஆண்டு புத்தகங்களின் தலைப்புகளை Dindigul தலைப்புகளுக்கு மாற்றலாமா?')) return;
+
+  showLoading(dryRun ? '⏳ சரிபார்க்கிறது...' : '⏳ தலைப்புகளை மாற்றுகிறது...');
+  try {
+    const res = await fetch('/api/admin/book_titles/sync_from_db', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_url: url, dry_run: dryRun, year })
+    });
+    const r = await res.json();
+    hideLoading();
+    if (r.error) { box.style.color = '#c0392b'; box.textContent = r.error; return; }
+    const samples = (r.samples || []).map(s =>
+      '<div style="margin-top:4px;"><span style="color:#6b7280;">' + escHtml(s.book_id) + '</span><br>' +
+      '<span style="text-decoration:line-through;color:#c0392b;">' + escHtml(s.old || '') + '</span> → ' +
+      '<b style="color:#15803d;">' + escHtml(s.new || '') + '</b></div>').join('');
+    box.style.color = '#1e293b';
+    box.innerHTML =
+      (dryRun ? '🔍 <b>சரிபார்ப்பு முடிவு</b> (இன்னும் மாற்றவில்லை)' : '✅ <b>தலைப்பு ஒத்திசைவு முடிந்தது</b>') + ' — ஆண்டு ' + escHtml(r.year) + '<br>' +
+      (r.year_filtered_source ? '' : '⚠️ மூல DB-ல் academic_year இல்லை; முழு table படிக்கப்பட்டது<br>') +
+      'மூல Book Id-கள்: <b>' + r.source_book_ids + '</b> | இங்குள்ள Book Id-கள்: <b>' + r.target_book_ids + '</b><br>' +
+      'மாறும் தலைப்புகள்: <b>' + r.titles_to_change + '</b> (வரிசைகள்: <b>' + r.rows_to_change + '</b>)' +
+      (dryRun ? '' : ' → மாற்றப்பட்ட வரிசைகள்: <b>' + (r.updated_rows || 0) + '</b>') + '<br>' +
+      'ஏற்கனவே ஒரே தலைப்பு (வரிசைகள்): <b>' + r.already_same_rows + '</b><br>' +
+      'மூலத்தில் இல்லாத Book Id: <b>' + r.not_in_source + '</b> | மூலத்தில் முரண்: <b>' + r.source_conflicts + '</b>' + samples;
+    if (!dryRun) toast('✅ ' + (r.updated_rows || 0) + ' வரிசைகளின் தலைப்பு மாற்றப்பட்டது', 'success');
+  } catch (e) {
+    hideLoading();
+    box.style.color = '#c0392b';
+    box.textContent = 'Server பிழை: ' + e;
+  }
+}

@@ -1178,6 +1178,20 @@
     <div id="coverImportMsg" style="margin-top:8px;font-size:0.82rem;line-height:1.5;"></div>
   </div>
 
+  <div style="margin-top:16px;padding:12px;border:1px dashed #b45309;border-radius:10px;background:#fffbeb;">
+    <div style="font-weight:700;color:#b45309;font-size:0.9rem;margin-bottom:6px;">📝 Dindigul-ல் திருத்தப்பட்ட தலைப்புகளை Book Id மூலம் ஒத்திசை</div>
+    <p style="font-size:0.78rem;color:var(--muted);margin-bottom:8px;">
+      அதே Book Id உள்ள புத்தகங்களுக்கு (தேர்ந்தெடுத்த ஆண்டு வரிசைகளில் மட்டும்) Dindigul தலைப்பு (எ.கா. Asia 100 Days-Rs.150) வைக்கப்படும். மூல DB-ல் எதுவும் மாறாது. முதலில் தலைப்புகளை ஒத்திசைத்து, பிறகு மேலே படங்களை இறக்குமதி செய்யவும்.
+    </p>
+    <input type="password" id="titleSyncSourceUrl" placeholder="Dindigul DB-ன் External Database URL (postgres://...)" autocomplete="off" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:6px;">
+    <input type="text" id="titleSyncYear" value="2025-2026" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:8px;box-sizing:border-box;margin-bottom:8px;" placeholder="ஆண்டு (எ.கா. 2025-2026)">
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-outline" onclick="runTitleSync(true)">🔍 முதலில் சரிபார்</button>
+      <button class="btn btn-success" onclick="runTitleSync(false)">📝 தலைப்புகளை மாற்று</button>
+    </div>
+    <div id="titleSyncMsg" style="margin-top:8px;font-size:0.82rem;line-height:1.5;"></div>
+  </div>
+
   <div class="modal-footer">
     <button class="btn btn-outline" onclick="closeModal('modalBookCoverUpload')">✕ மூடு</button>
     <button class="btn btn-success" onclick="doUploadBookCover()">📤 அப்லோட் செய்</button>

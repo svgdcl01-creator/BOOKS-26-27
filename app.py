@@ -3684,6 +3684,122 @@ def api_admin_book_covers_import_from_db():
     return jsonify(result)
 
 
+@app.route("/api/admin/book_titles/sync_from_db", methods=["POST"])
+@admin_required
+def api_admin_book_titles_sync_from_db():
+    """
+    வேறு மாவட்ட DB-ல் (எ.கா. Dindigul) திருத்தப்பட்ட தலைப்புகளை, அதே Book Id
+    உள்ள புத்தகங்களுக்கு இந்த DB-ல் மாற்றும். மூல DB read-only.
+    தேர்ந்தெடுத்த academic_year வரிசைகளில் மட்டும் மாற்றும் (இயல்பு: 2025-2026).
+    """
+    data = request.get_json(silent=True) or {}
+    source_url = (data.get("source_url") or "").strip()
+    dry_run = bool(data.get("dry_run", True))
+    year = (data.get("year") or "2025-2026").strip()
+
+    if not (source_url.startswith("postgres://") or source_url.startswith("postgresql://")):
+        return jsonify({"error": "Dindigul DB-ன் Database URL (postgres://... அல்லது postgresql://...) கொடுக்கவும்"}), 400
+
+    # ---- 1. மூல DB-ல் இருந்து book_id -> தலைப்பு ----
+    try:
+        src = psycopg2.connect(source_url, connect_timeout=15)
+    except Exception as e:
+        return jsonify({"error": "மூல DB-உடன் இணைக்க முடியவில்லை: " + str(e).replace(source_url, "***")[:200]}), 400
+    year_filtered = True
+    try:
+        src.set_session(readonly=True, autocommit=True)
+        scur = src.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        base_sql = ("SELECT DISTINCT book_id, TRIM(title) AS title FROM books "
+                    "WHERE book_id IS NOT NULL AND TRIM(book_id) <> '' "
+                    "AND title IS NOT NULL AND TRIM(title) <> ''")
+        try:
+            scur.execute(base_sql + " AND academic_year = %s", (year,))
+        except Exception:
+            # மூல DB-ல் academic_year column இல்லை — முழு table படிக்கப்படும்
+            year_filtered = False
+            scur.execute(base_sql)
+        src_rows = scur.fetchall()
+    except Exception as e:
+        return jsonify({"error": "மூல DB-ல் books படிக்க முடியவில்லை: " + str(e).replace(source_url, "***")[:200]}), 400
+    finally:
+        try:
+            src.close()
+        except Exception:
+            pass
+
+    if not src_rows:
+        return jsonify({"error": "மூல DB-ல் Book Id உள்ள புத்தகங்கள் எதுவும் கிடைக்கவில்லை"}), 404
+
+    src_titles = defaultdict(set)
+    for r in src_rows:
+        src_titles[r["book_id"].strip()].add(r["title"])
+    conflict_ids = {b for b, t in src_titles.items() if len(t) > 1}
+    src_map = {b: next(iter(t)) for b, t in src_titles.items() if len(t) == 1}
+
+    # ---- 2. இந்த DB-ல் (தேர்ந்தெடுத்த ஆண்டு) உள்ள தலைப்புகள் ----
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT book_id, title, COUNT(*) AS cnt FROM books "
+            "WHERE academic_year = %s AND book_id IS NOT NULL AND TRIM(book_id) <> '' "
+            "GROUP BY book_id, title",
+            (year,)
+        )
+        target_rows = cur.fetchall()
+
+    changes = {}          # book_id -> (புதிய தலைப்பு, [(பழைய தலைப்பு, rows)])
+    same = 0
+    for r in target_rows:
+        bid = (r["book_id"] or "").strip()
+        new_t = src_map.get(bid)
+        if not new_t:
+            continue
+        if (r["title"] or "").strip() == new_t:
+            same += r["cnt"]
+            continue
+        changes.setdefault(bid, (new_t, []))[1].append((r["title"], r["cnt"]))
+
+    target_ids = {(r["book_id"] or "").strip() for r in target_rows}
+    not_in_source = len(target_ids - set(src_map) - conflict_ids)
+    rows_to_change = sum(c for _, olds in changes.values() for _, c in olds)
+
+    result = {
+        "success": True,
+        "dry_run": dry_run,
+        "year": year,
+        "year_filtered_source": year_filtered,
+        "source_book_ids": len(src_map),
+        "target_book_ids": len(target_ids),
+        "titles_to_change": len(changes),
+        "rows_to_change": rows_to_change,
+        "already_same_rows": same,
+        "not_in_source": not_in_source,
+        "source_conflicts": len(conflict_ids),
+        "samples": [
+            {"book_id": b, "old": olds[0][0], "new": new_t}
+            for b, (new_t, olds) in list(changes.items())[:15]
+        ],
+    }
+    if dry_run:
+        return jsonify(result)
+
+    # ---- 3. உண்மையான மாற்றம் ----
+    updated = 0
+    with DBConn() as (conn, cur):
+        for bid, (new_t, _) in changes.items():
+            cur.execute(
+                "UPDATE books SET title = %s WHERE academic_year = %s "
+                "AND TRIM(book_id) = %s AND title IS DISTINCT FROM %s",
+                (new_t, year, bid, new_t)
+            )
+            updated += cur.rowcount
+            try:
+                cur.execute("UPDATE book_covers SET title = %s WHERE book_id = %s", (new_t, bid))
+            except Exception:
+                pass
+    result["updated_rows"] = updated
+    return jsonify(result)
+
+
 # ==========================================================
 # LIBRARIAN — Book Search Details (read-only, ஒரு நூலகத்திற்கு
 # அனுப்பப்பட்ட/பிரிக்கப்பட்ட புத்தகங்கள் மட்டும்)
