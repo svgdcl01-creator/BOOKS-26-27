@@ -3502,6 +3502,189 @@ def api_book_cover_get(book_id):
 
 
 # ==========================================================
+# வேறு மாவட்ட DB-ல் (எ.கா. Dindigul) சேமித்த முகப்புப் படங்களை
+# தலைப்பு (+விலை) பொருந்தும் புத்தகங்களுக்கு மட்டும் இங்கு இறக்குமதி செய்ய.
+# - மூல DB-ல் படிக்க மட்டும் (read-only) — எதையும் மாற்றாது/அழிக்காது.
+# - Book Id எல்லா மாவட்டங்களுக்கும் பொதுவானது: முதலில் அதே Book Id இருந்தால்
+#   நேரடியாகப் பொருத்தும்; இல்லையென்றால் மட்டும் தலைப்பு (+விலை) வைத்துப் பொருத்தும்.
+# - தெளிவாகப் பொருந்தாதவை (இரட்டை விலை குழப்பம்) தள்ளிவிடப்படும்.
+# ==========================================================
+def _norm_price_num(p):
+    try:
+        return round(float(re.sub(r'[^0-9.]', '', str(p or '')) or 'x'), 2)
+    except Exception:
+        return None
+
+
+@app.route("/api/admin/book_covers/import_from_db", methods=["POST"])
+@admin_required
+def api_admin_book_covers_import_from_db():
+    data = request.get_json(silent=True) or {}
+    source_url = (data.get("source_url") or "").strip()
+    dry_run = bool(data.get("dry_run", True))
+    overwrite = bool(data.get("overwrite", False))
+
+    if not (source_url.startswith("postgres://") or source_url.startswith("postgresql://")):
+        return jsonify({"error": "Dindigul DB-ன் Database URL (postgres://... அல்லது postgresql://...) கொடுக்கவும்"}), 400
+
+    # ---- 1. மூல DB-ல் இருந்து cover பட்டியல் (படம் இல்லாமல்) ----
+    try:
+        src = psycopg2.connect(source_url, connect_timeout=15)
+    except Exception as e:
+        msg = str(e).replace(source_url, "***")
+        return jsonify({"error": "மூல DB-உடன் இணைக்க முடியவில்லை: " + msg[:200]}), 400
+    try:
+        src.set_session(readonly=True, autocommit=True)
+        scur = src.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            scur.execute(
+                "SELECT c.book_id, "
+                "COALESCE(NULLIF(TRIM(c.title), ''), "
+                "  (SELECT b.title FROM books b WHERE b.book_id = c.book_id AND b.title IS NOT NULL LIMIT 1)) AS title, "
+                "(SELECT b.price FROM books b WHERE b.book_id = c.book_id "
+                "   AND b.price IS NOT NULL AND TRIM(b.price) <> '' LIMIT 1) AS price "
+                "FROM book_covers c ORDER BY c.book_id"
+            )
+        except Exception:
+            # books table-ல் இருந்து விலை/தலைப்பு எடுக்க முடியாத DB — cover table மட்டும் படிப்போம்
+            scur.execute("SELECT book_id, title, NULL AS price FROM book_covers ORDER BY book_id")
+        src_rows = scur.fetchall()
+    except Exception as e:
+        src.close()
+        return jsonify({"error": "மூல DB-ல் book_covers படிக்க முடியவில்லை: " + str(e).replace(source_url, "***")[:200]}), 400
+
+    if not src_rows:
+        src.close()
+        return jsonify({"error": "மூல DB-ல் முகப்புப் படங்கள் எதுவும் இல்லை"}), 404
+
+    # ---- 2. இந்த DB-ல் உள்ள புத்தகங்கள் (எல்லா ஆண்டுகளும்) ----
+    with DBConn() as (conn, cur):
+        cur.execute(
+            "SELECT DISTINCT book_id, title, price FROM books "
+            "WHERE book_id IS NOT NULL AND TRIM(book_id) <> ''"
+        )
+        target_rows = cur.fetchall()
+        cur.execute("SELECT book_id FROM book_covers")
+        existing_covers = {r["book_id"] for r in cur.fetchall()}
+
+    # தலைப்பு (normalize) -> {book_id: price}
+    target_by_title = defaultdict(dict)
+    for r in target_rows:
+        target_by_title[_norm_title(r["title"])][r["book_id"]] = r["price"]
+
+    # மூலத்தில் ஒரே தலைப்புக்கு எத்தனை படங்கள்
+    src_title_count = defaultdict(int)
+    for r in src_rows:
+        src_title_count[_norm_title(r["title"])] += 1
+
+    # ---- 3. பொருத்துதல் ----
+    plan = []            # (source_book_id, [target_book_ids])
+    no_match, ambiguous = [], []
+    target_ids = {r["book_id"] for r in target_rows}
+    for r in src_rows:
+        # 1) Book Id எல்லா மாவட்டங்களுக்கும் பொதுவானது — அதே Book Id இங்கு இருந்தால் நேரடியாகப் பொருத்து
+        if r["book_id"] in target_ids:
+            plan.append((r["book_id"], [r["book_id"]]))
+            continue
+        # 2) இங்கு அந்த Book Id இல்லையென்றால் மட்டும் தலைப்பு (+விலை) வைத்துப் பொருத்து
+        nt = _norm_title(r["title"])
+        if not nt:
+            no_match.append(r["title"] or r["book_id"])
+            continue
+        cands = target_by_title.get(nt)
+        if not cands:
+            no_match.append(r["title"])
+            continue
+        sp = _norm_price_num(r["price"])
+        exact = [bid for bid, pr in cands.items()
+                 if sp is not None and _norm_price_num(pr) == sp]
+        if exact:
+            plan.append((r["book_id"], exact))
+        elif len(cands) == 1 and src_title_count[nt] == 1:
+            plan.append((r["book_id"], list(cands.keys())))
+        else:
+            ambiguous.append(r["title"])
+
+    would_apply = 0
+    already = 0
+    for _, tids in plan:
+        for t in tids:
+            if t in existing_covers and not overwrite:
+                already += 1
+            else:
+                would_apply += 1
+
+    result = {
+        "success": True,
+        "dry_run": dry_run,
+        "source_total": len(src_rows),
+        "matched_titles": len(plan),
+        "to_apply": would_apply,
+        "already_have_cover": already,
+        "no_match": len(no_match),
+        "ambiguous": len(ambiguous),
+        "no_match_samples": [t for t in no_match[:10]],
+        "ambiguous_samples": [t for t in ambiguous[:10]],
+    }
+
+    if dry_run:
+        src.close()
+        return jsonify(result)
+
+    # ---- 4. உண்மையான இறக்குமதி ----
+    applied = 0
+    try:
+        need_ids = sorted({sid for sid, _ in plan})
+        images = {}
+        if need_ids:
+            scur.execute(
+                "SELECT book_id, image, content_type FROM book_covers WHERE book_id = ANY(%s)",
+                (need_ids,)
+            )
+            for r in scur.fetchall():
+                images[r["book_id"]] = (bytes(r["image"]), r["content_type"] or "image/jpeg")
+    except Exception as e:
+        src.close()
+        return jsonify({"error": "படங்களை மூல DB-ல் இருந்து படிக்க முடியவில்லை: " + str(e).replace(source_url, "***")[:200]}), 400
+    finally:
+        try:
+            src.close()
+        except Exception:
+            pass
+
+    title_by_target = {}
+    for r in target_rows:
+        title_by_target.setdefault(r["book_id"], r["title"])
+
+    with DBConn() as (conn, cur):
+        for sid, tids in plan:
+            img = images.get(sid)
+            if not img:
+                continue
+            for t in tids:
+                if t in existing_covers and not overwrite:
+                    continue
+                if overwrite:
+                    cur.execute(
+                        "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
+                        "VALUES (%s, %s, %s, %s, now()) "
+                        "ON CONFLICT (book_id) DO UPDATE SET title = EXCLUDED.title, "
+                        "image = EXCLUDED.image, content_type = EXCLUDED.content_type, uploaded_at = now()",
+                        (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO book_covers (book_id, title, image, content_type, uploaded_at) "
+                        "VALUES (%s, %s, %s, %s, now()) ON CONFLICT (book_id) DO NOTHING",
+                        (t, title_by_target.get(t) or "", psycopg2.Binary(img[0]), img[1])
+                    )
+                applied += 1
+
+    result["applied"] = applied
+    return jsonify(result)
+
+
+# ==========================================================
 # LIBRARIAN — Book Search Details (read-only, ஒரு நூலகத்திற்கு
 # அனுப்பப்பட்ட/பிரிக்கப்பட்ட புத்தகங்கள் மட்டும்)
 # ==========================================================
