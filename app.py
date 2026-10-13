@@ -3520,7 +3520,7 @@ def _norm_price_num(p):
 @admin_required
 def api_admin_book_covers_import_from_db():
     data = request.get_json(silent=True) or {}
-    source_url = (data.get("source_url") or "").strip()
+    source_url = (data.get("source_url") or "").strip().strip('"\'').strip()
     dry_run = bool(data.get("dry_run", True))
     overwrite = bool(data.get("overwrite", False))
 
@@ -3693,7 +3693,7 @@ def api_admin_book_titles_sync_from_db():
     தேர்ந்தெடுத்த academic_year வரிசைகளில் மட்டும் மாற்றும் (இயல்பு: 2025-2026).
     """
     data = request.get_json(silent=True) or {}
-    source_url = (data.get("source_url") or "").strip()
+    source_url = (data.get("source_url") or "").strip().strip('"\'').strip()
     dry_run = bool(data.get("dry_run", True))
     year = (data.get("year") or "2025-2026").strip()
 
@@ -3782,20 +3782,29 @@ def api_admin_book_titles_sync_from_db():
     if dry_run:
         return jsonify(result)
 
-    # ---- 3. உண்மையான மாற்றம் ----
+    # ---- 3. உண்மையான மாற்றம் — அனைத்தும் ஒரே UPDATE-ல் (வேகமாக, timeout வராமல்) ----
+    bids = list(changes.keys())
+    new_titles = [changes[b][0] for b in bids]
     updated = 0
     with DBConn() as (conn, cur):
-        for bid, (new_t, _) in changes.items():
+        cur.execute(
+            "UPDATE books b SET title = v.new_title "
+            "FROM (SELECT unnest(%s::text[]) AS bid, unnest(%s::text[]) AS new_title) v "
+            "WHERE b.academic_year = %s AND TRIM(b.book_id) = v.bid "
+            "AND b.title IS DISTINCT FROM v.new_title",
+            (bids, new_titles, year)
+        )
+        updated = cur.rowcount
+    try:
+        with DBConn() as (conn, cur):
             cur.execute(
-                "UPDATE books SET title = %s WHERE academic_year = %s "
-                "AND TRIM(book_id) = %s AND title IS DISTINCT FROM %s",
-                (new_t, year, bid, new_t)
+                "UPDATE book_covers c SET title = v.new_title "
+                "FROM (SELECT unnest(%s::text[]) AS bid, unnest(%s::text[]) AS new_title) v "
+                "WHERE c.book_id = v.bid",
+                (bids, new_titles)
             )
-            updated += cur.rowcount
-            try:
-                cur.execute("UPDATE book_covers SET title = %s WHERE book_id = %s", (new_t, bid))
-            except Exception:
-                pass
+    except Exception as e:
+        print(f"book_covers title sync skipped: {e}")
     result["updated_rows"] = updated
     return jsonify(result)
 
